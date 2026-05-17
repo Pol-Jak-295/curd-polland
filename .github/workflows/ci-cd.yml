@@ -82,5 +82,5 @@ jobs:
           files: |
             release/linux/curd-linux-x86_64
             release/linux/curd-linux-arm64
-        env:
-          GITHUB_TOKEN: ${{ secrets.ACTIONS_PAT }}
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
