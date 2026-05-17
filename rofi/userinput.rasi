@@ -1,60 +1,124 @@
+/**
+ *
+ * Author : Aditya Shakya (adi1090x)
+ * Github : @adi1090x
+ * 
+ * Rofi Theme File
+ * Rofi Version: 1.7.3
+ *
+ *
+ * Modified later by: Jaka Polesnik (Pol-Jak-295)
+ * Github: Pol-Jak-295
+ *
+ * Made for curd anime watcher
+ **/
+
+/*****----- Configuration -----*****/
+configuration {
+	modi:                       "drun,run,filebrowser,window";
+    show-icons:                 true;
+    display-drun:               "APPS";
+    display-run:                "RUN";
+    display-filebrowser:        "FILES";
+    display-window:             "WINDOW";
+	drun-display-format:        "{name}";
+	window-format:              "{w} · {c} · {t}";
+}
+
+/*****----- Global Properties -----*****/
 * {
-    background:     #000000;
-    background-alt: #1a1a1a;
-    foreground:     #CCCCCC;
-    selected:       #3584E4;
+    font:                        "Maple Mono NF CN 12";
+    background:                  #09164C88;
+    background-alt:              #102886aa;
+    foreground:                  #FFFFFF;
+    selected:                    #b4befeaa;
+    active:                      #3860FF;
+    urgent:                      #BB00AF;
 }
 
+/*****----- Main Window -----*****/
 window {
-    fullscreen: false;
-    background-color: transparent;
-    border-radius: 30px;
-    width: 800px;
-    height: 400px;
+    transparency:                "real";
+    location:                    center;
+    anchor:                      center;
+    fullscreen:                  false;
+    width:                       1200px;
+    height:                      700px;
+    x-offset:                    0px;
+    y-offset:                    0px;
+
+    enabled:                     true;
+    border-radius:               50px;
+    cursor:                      "default";
+    background-color:            @background;
+    border-color:                #b4befe;
+    border:                      2px;
 }
 
+/*****----- Main Box -----*****/
 mainbox {
-    children: [ message, inputbar ];
-    padding: 40px;
-    spacing: 30px;
-    background-color: #000000;
+    enabled:                     true;
+    children:                    [ "message", "inputbar" ];
+    padding:                     40px;
+    spacing:                     30px;
+    background-color:            transparent;
 }
 
+/*****----- Message -----*****/
 message {
-    border: 0;
-    padding: 0;
-    margin: 0;
-    font: "Sans Bold 22";
-    background-color: transparent;
-    text-color: #FFFFFF;
+    enabled:                     true;
+    border:                      0;
+    padding:                     0;
+    margin:                      0;
+    background-color:            transparent;
+    text-color:                  #FFFFFF;
 }
 
 textbox {
-    background-color: #1a1a1a;
-    text-color: #FFFFFF;
-    padding: 25px;
-    border-radius: 15px;
-    font: "Sans Bold 22";
+    enabled:                     true;
+    background-color:            @background-alt;
+    text-color:                  #FFFFFF;
+    padding:                     25px;
+    border-radius:               8px;
+    font:                        "Maple Mono NF CN Bold 22";
+    horizontal-align:            0.5;
+    vertical-align:              0.5;
 }
 
+/*****----- Inputbar -----*****/
 inputbar {
-    children: [ prompt, entry ];
-    background-color: #333333;
-    padding: 12px 16px;
-    border-radius: 10px;
-    text-color: #FFFFFF;
+    enabled:                     true;
+    children:                    [ "prompt", "entry" ];
+    background-color:            @background-alt;
+    padding:                     8px;
+    border-radius:               8px;
+    text-color:                  @foreground;
 }
 
 prompt {
-    padding: 8px;
-    background-color: @selected;
-    text-color: #000000;
-    border-radius: 6px;
-    margin: 0 8px 0 0;
+    enabled:                     true;
+    padding:                     8px;
+    background-color:            @selected;
+    text-color:                  #000000;
+    border-radius:               4px;
+    margin:                      0px 8px 0px 0px;
 }
 
 entry {
-    padding: 8px;
-    background-color: transparent;
-    text-color: #FFFFFF;
+    enabled:                     true;
+    padding:                     8px;
+    background-color:            transparent;
+    text-color:                  #FFFFFF;
+    cursor:                      text;
+    placeholder:                 "Search...";
+    placeholder-color:           rgba(255, 255, 255, 0.5);
+    border-radius:               6px;
+}
+
+/*****----- Error Message -----*****/
+error-message {
+    padding:                     15px;
+    border-radius:               20px;
+    background-color:            @background;
+    text-color:                  @foreground;
 }

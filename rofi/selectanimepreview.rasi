@@ -1,120 +1,155 @@
-// Colours
+/**
+ *
+ * Author : Aditya Shakya (adi1090x)
+ * Github : @adi1090x
+ * 
+ * Rofi Theme File
+ * Rofi Version: 1.7.3
+ *
+ *
+ * Modified later by: Jaka Polesnik (Pol-Jak-295)
+ * Github: Pol-Jak-295
+ *
+ * Made for curd anime watcher
+ **/
+
+/*****----- Global Properties -----*****/
 * {
-    background-color:               transparent;  /* Transparent background for the global UI */
-    background:                     #000000;  /* Solid black background */
-    background-transparent:         #1D2330A0;  /* Semi-transparent background */
-    text-color:                     #BBBBBB;  /* Default text color (light gray) */
-    text-color-selected:            #FFFFFF;  /* Text color when selected (white) */
-    primary:                        rgba(53, 132, 228, 0.75);  /* Blusish primary color */
-    important:                        rgba(53, 132, 228, 0.75);  /* Bluish primary color */
+    font:                        "Maple Mono NF CN 14";
+    background-color:            transparent;
+    background:                  #09164C88;
+    background-transparent:      #09164C88;
+    text-color:                  #FFFFFF;
+    text-color-selected:         #FFFFFF;
+    primary:                     #b4befeaa;
+    important:                   #b4befeaa;
 }
 
+/*****----- Configuration -----*****/
 configuration {
-    font:                           "Roboto 14";  /* Sets the global font to Roboto, size 14 */
-    show-icons:                     true;  /* Option to display icons in the UI */
+    font:                        "Maple Mono NF CN 14";
+    show-icons:                  true;
 }
 
+/*****----- Main Window -----*****/
 window {
-    fullscreen:                     true;  /* The window will open in fullscreen */
-    height:                         100%;  /* Full window height */
-    width:                          100%;  /* Full window width */
-    transparency:                   "real";  /* Real transparency effect */
-    background-color:               @background-transparent;  /* Transparent background */
-    border:                         0px;  /* No border around the window */
-    border-color:                   @primary;  /* Border color set to the primary color */
+    fullscreen:                  true;
+    height:                      100%;
+    width:                       100%;
+    transparency:                "real";
+    background-color:            @background-transparent;
+    border:                      0px;
+    border-color:                @primary;
 }
 
+/*****----- Main Box -----*****/
 mainbox {
-    children:                       [prompt, inputbar-box, listview];  /* Main box contains prompt, input bar, and list view */
-    padding:                        0px;  /* No padding around the main box */
+    children:                    [ "prompt", "inputbar-box", "listview" ];
+    padding:                     0px;
 }
 
+/*****----- Prompt -----*****/
 prompt {
-    width:                          100%;  /* Prompt takes full width */
-    margin:                         10px 0px 0px 30px;  /* Margin around the prompt */
-    text-color:                     @important;  /* Text color for prompt (important color) */
-    font:                           "Roboto Bold 27";  /* Bold Roboto font, size 27 */
+    width:                       100%;
+    margin:                      10px 0px 0px 30px;
+    text-color:                  @important;
+    font:                        "Maple Mono NF CN Bold 27";
 }
 
-listview {
-    layout:                         vertical;  /* Vertical layout for list items */
-    padding:                        10px;  /* Padding inside the list view */
-    spacing:                        20px;  /* Space between items in the list */
-    columns:                        8;  /* Maximum 8 items per row */
-    dynamic:                        true;  /* Allows the list to dynamically adjust */
-    orientation:                    horizontal;  /* Horizontal orientation for list items */
-}
-
+/*****----- Inputbar -----*****/
 inputbar-box {
-    children:                       [dummy, inputbar, dummy];  /* Input bar is centered with dummy placeholders */
-    orientation:                    horizontal;  /* Horizontal layout for input bar */
-    expand:                         false;  /* Does not expand to fill the space */
+    children:                    [ "dummy", "inputbar", "dummy" ];
+    orientation:                 horizontal;
+    expand:                      false;
 }
 
 inputbar {
-    children:                       [textbox-prompt, entry];  /* Contains a prompt and an entry field */
-    margin:                         0px;  /* No margin around the input bar */
-    background-color:               @primary;  /* Background color set to the primary color */
-    border:                         4px;  /* Border thickness around the input bar */
-    border-color:                   @primary;  /* Border color matches the primary color */
-    border-radius:                  8px;  /* Rounded corners for the input bar */
+    children:                    [ "textbox-prompt", "entry" ];
+    margin:                      0px;
+    background-color:            @primary;
+    border:                      4px;
+    border-color:                @primary;
+    border-radius:               8px;
 }
 
 textbox-prompt {
-    text-color:                     @background;  /* Text color inside prompt matches the background color */
-    horizontal-align:               0.5;  /* Horizontally centered */
-    vertical-align:                 0.5;  /* Vertically centered */
-    expand:                         false;  /* Does not expand to fill available space */
+    text-color:                  @background;
+    horizontal-align:            0.5;
+    vertical-align:              0.5;
+    expand:                      false;
 }
 
 entry {
-    expand:                         false;  /* Entry field does not expand */
-    padding:                        8px;  /* Padding inside the entry field */
-    margin:                         -6px;  /* Negative margin to position entry properly */
-    horizontal-align:               0;  /* Left-aligned text inside the entry field */
-    width:                          300;  /* Fixed width for the entry field */
-    background-color:               @background;  /* Entry background color matches the global background */
-    border:                         6px;  /* Border thickness around the entry field */
-    border-color:                   @primary;  /* Border color matches the primary color */
-    border-radius:                  8px;  /* Rounded corners for the entry field */
-    cursor:                         text;  /* Cursor changes to text input cursor inside the entry field */
+    enabled:                     true;
+    expand:                      false;
+    padding:                     8px;
+    margin:                      -6px;
+    horizontal-align:            0;
+    width:                       300;
+    background-color:            #09164Cff;
+    border:                      6px;
+    border-color:                @primary;
+    border-radius:               8px;
+    cursor:                      text;
+    text-color:                  #FFFFFF;
+    placeholder:                 "Search...";
+    placeholder-color:           rgba(255, 255, 255, 0.5);
 }
 
+/*****----- Listview -----*****/
+listview {
+    layout:                      vertical;
+    padding:                     10px;
+    spacing:                     20px;
+    columns:                     8;
+    dynamic:                     true;
+    orientation:                 horizontal;
+}
+
+/*****----- Elements -----*****/
 element {
-    children:                       [dummy, element-box, dummy];  /* Contains an element box with dummy placeholders */
-    padding:                        5px;  /* Padding around the element */
-    orientation:                    vertical;  /* Vertical layout for element content */
-    border:                         0px;  /* No border around the element */
-    border-radius:                  16px;  /* Rounded corners for the element */
-    background-color:               transparent;  /* Transparent background */
-    width:                          100px;  /* Width of each element */
-    height:                         50px;  /* Height of each element */
+    children:                    [ "dummy", "element-box", "dummy" ];
+    padding:                     5px;
+    orientation:                 vertical;
+    border:                      0px;
+    border-radius:               16px;
+    background-color:            transparent;
+    width:                       100px;
+    height:                      50px;
 }
 
 element selected {
-    background-color:               @primary;  /* Background color of the element when selected */
+    background-color:            @primary;
 }
 
 element-box {
-    children:                       [element-icon, element-text];  /* Element box contains an icon and text */
-    orientation:                    vertical;  /* Vertical layout for icon and text */
-    expand:                         false;  /* Does not expand to fill available space */
-    cursor:                         pointer;  /* Cursor changes to a pointer when hovering over the element */
+    children:                    [ "element-icon", "element-text" ];
+    orientation:                 vertical;
+    expand:                      false;
+    cursor:                      pointer;
 }
 
 element-icon {
-    padding:                        10px;  /* Padding inside the icon */
-    cursor:                         inherit;  /* Inherits cursor style from the parent */
-    size:                           33%;  /* Icon size is set to 33% of the parent element */
-    margin:                         10px;  /* Margin around the icon */
+    padding:                     10px;
+    cursor:                      inherit;
+    size:                        33%;
+    margin:                      10px;
 }
 
 element-text {
-    horizontal-align:               0.5;  /* Horizontally center-aligns the text */
-    cursor:                         inherit;  /* Inherits cursor style from the parent */
-    text-color:                     @text-color;  /* Text color for element text */
+    horizontal-align:            0.5;
+    cursor:                      inherit;
+    text-color:                  @text-color;
 }
 
 element-text selected {
-    text-color:                     @text-color-selected;  /* Text color when the element is selected */
+    text-color:                  @text-color-selected;
+}
+
+/*****----- Error Message -----*****/
+error-message {
+    padding:                     15px;
+    border-radius:               20px;
+    background-color:            @background;
+    text-color:                  #FFFFFF;
 }

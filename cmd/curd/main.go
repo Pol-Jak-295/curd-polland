@@ -109,7 +109,7 @@ func main() {
 	anime.Ep.ContinueLast = *continueLast
 
 	if *updateScript {
-		repo := "wraient/curd"
+		repo := "Pol-Jak-295/curd-polland"
 		fileName := "curd"
 
 		if err := internal.UpdateCurd(repo, fileName); err != nil {

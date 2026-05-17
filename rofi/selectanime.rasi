@@ -1,80 +1,190 @@
+/**
+ *
+ * Author : Aditya Shakya (adi1090x)
+ * Github : @adi1090x
+ * 
+ * Rofi Theme File
+ * Rofi Version: 1.7.3
+ *
+ *
+ * Modified later by: Jaka Polesnik (Pol-Jak-295)
+ * Github: Pol-Jak-295
+ *
+ * Made for curd anime watcher
+ **/
+
+/*****----- Configuration -----*****/
 configuration {
-    font: "Sans 12";
-    line-margin: 10;
-    display-drun: "";
+    font:                        "Maple Mono NF CN 12";
+    line-margin:                 10;
+    display-drun:                "";
 }
 
+/*****----- Global Properties -----*****/
 * {
-    background:     #000000;  /* Black background for everything */
-    background-alt: #000000;  /* Ensures no alternation */
-    foreground:     #CCCCCC;
-    selected:       #3584E4;
-    active:         #2E7D32;
-    urgent:         #C62828;
+    font:                        "Maple Mono NF CN 12";
+    background:                  #09164C88;
+    background-alt:              #102886aa;
+    foreground:                  #cdd6f4;
+    selected:                    #b4befeaa;
+    active:                      #3860FF;
+    urgent:                      #BB00AF;
 }
 
+/*****----- Main Window -----*****/
 window {
-    fullscreen: false;
-    background-color: rgba(0, 0, 0, 0.8);  /* Solid black transparent background */
-    border-radius: 50px;
+    transparency:                "real";
+    location:                    center;
+    anchor:                      center;
+    fullscreen:                  false;
+    width:                       1200px;
+    height:                      700px;
+    x-offset:                    0px;
+    y-offset:                    0px;
+
+    enabled:                     true;
+    border-radius:               50px;
+    cursor:                      "default";
+    background-color:            @background;
+    border-color:                #cba6f7;
+    border:                      2px;
 }
 
+/*****----- Main Box -----*****/
 mainbox {
-    padding: 50px 50px;
-    background-color: transparent;  /* Ensures black background fills entire main area */
-    children: [inputbar, listview];
-    spacing: 20px;
+    enabled:                     true;
+    children:                    [ "imagebox", "listview" ];
+    padding:                     0px 0px;
+    spacing:                     20px;
+    background-color:            transparent;
+    orientation:		 horizontal;
 }
 
+imagebox {
+    padding:                     20px;
+    background-color:            transparent;
+    background-image:            url("~/.config/images/Rimuru.transp.png", height);
+    background-opacity:		 0.5;
+    orientation:                 vertical;
+    children:                    [ "inputbar", "dummy", "mode-switcher" ];
+}
+
+dummy {
+    background-color:            transparent;
+}
+
+/*****----- Inputbar -----*****/
 inputbar {
-    background-color: #333333;  /* Dark gray background for input bar */
-    padding: 8px;
-    border-radius: 8px;
-    children: [prompt, entry];
+    enabled:                     true;
+    children:                    [ "prompt", "entry" ];
+    background-color:            @background-alt;
+    padding:                     8px;
+    border-radius:               28px;
+    text-color:                  @foreground;
 }
 
 prompt {
-    enabled: true;
-    padding: 8px;
-    background-color: @selected;
-    text-color: #000000;
-    border-radius: 4px;
+    enabled:                     true;
+    padding:                     8px;
+
+    background-color:            @selected;
+    text-color:                  #000000;
+    border-radius:               24px;
 }
 
 entry {
-    padding: 8px;
-    background-color: transparent;  /* Slightly lighter gray for visibility */
-    text-color: #FFFFFF;        /* White text to make typing visible */
-    placeholder: "Search...";
-    placeholder-color: rgba(255, 255, 255, 0.5);
-    border-radius: 6px;
+    enabled:                     true;
+    padding:                     8px;
+    background-color:            transparent;
+    text-color:                  #FFFFFF;
+    cursor:                      text;
+    placeholder:                 "Search...";
+    placeholder-color:           rgba(255, 255, 255, 0.5);
+    border-radius:               26px;
 }
 
+/*****----- Listview -----*****/
 listview {
-    layout: vertical;
-    spacing: 8px;
-    lines: 9;
-    background-color: transparent;  /* Consistent black background for list items */
+    padding:			 40px 40px 40px 20px;
+    background-color:			 transparent;
 }
 
+
+
+listview-true {
+    enabled:                     true;
+    columns:                     1;
+    lines:                       9;
+    cycle:                       true;
+    dynamic:                     true;
+    scrollbar:                   false;
+    layout:                      vertical;
+    reverse:                     false;
+    fixed-height:                true;
+    fixed-columns:               true;
+
+    spacing:                     8px;
+    background-color:            transparent;
+    text-color:                  @foreground;
+    cursor:                      "default";
+}
+
+/*****----- Elements -----*****/
 element {
-    padding: 12px;
-    border-radius: 4px;
-    background-color: transparent;  /* Uniform color for each list item */
-    text-color: @foreground;
+    enabled:                     true;
+    spacing:                     10px;
+    padding:                     12px;
+    border-radius:               24px;
+    background-color:            transparent;
+    text-color:                  @foreground;
+    cursor:                      pointer;
 }
 
 element normal.normal {
-    background-color: transparent;  /* Ensures no alternating color */
+    background-color:            transparent;
+    text-color:                  @foreground;
+}
+element normal.urgent {
+    background-color:            @urgent;
+    text-color:                  @foreground;
+}
+element normal.active {
+    background-color:            @active;
+    text-color:                  @foreground;
+}
+element selected.normal {
+    background-color:            @selected;
+    text-color:                  #FFFFFF;
+    border:			 2px;
+}
+element selected.urgent {
+    background-color:            @urgent;
+    text-color:                  @foreground;
+}
+element selected.active {
+    background-color:            @urgent;
+    text-color:                  @foreground;
 }
 
-element selected.normal {
-    background-color: @selected;
-    text-color: #FFFFFF;
+element-icon {
+    background-color:            transparent;
+    text-color:                  inherit;
+    size:                        32px;
+    cursor:                      inherit;
 }
 
 element-text {
-    background-color: transparent;
-    text-color: inherit;
-    vertical-align: 0.5;
+    background-color:            transparent;
+    text-color:                  inherit;
+    cursor:                      inherit;
+    vertical-align:              0.5;
+    horizontal-align:            0.0;
+}
+
+/*****----- Error Message -----*****/
+error-message {
+    padding:                     15px;
+    border-radius:               20px;
+    background-color:            @background;
+    text-color:                  @foreground;
 }
