@@ -1,5 +1,5 @@
 # Maintainer: Wraient <rushikeshwastaken@gmail.com>
-pkgname='curd'
+pkgname='curd-polland'
 pkgver=1.1.4
 pkgrel=1
 pkgdesc="Watch anime in CLI with AniList Tracking, Discord RPC, Intro/Outro/Filler/Recap Skipping, etc."
@@ -9,7 +9,7 @@ license=('GPL')
 depends=('mpv' 'rofi' 'ueberzugpp')
 provides=('curd')
 conflicts=('curd')
-source=("https://github.com/Wraient/curd/releases/download/v${pkgver}/curd-linux-x86_64")
+source=("https://github.com/Pol-Jak-295/curd-polland/releases/download/v${pkgver}/curd-linux-x86_64")
 sha256sums=('SKIP')
 
 package() {
