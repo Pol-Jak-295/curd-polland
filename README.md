@@ -3,7 +3,7 @@
 A cli application to stream anime with [Anilist](https://anilist.co/) integration and Discord RPC written in golang.
 Works on Linux, MacOS and Windows.
 
-## Join the discord server
+## Join the original discord server
 
 https://discord.gg/rrpBfu2gHq
 
@@ -21,6 +21,8 @@ Rofi with Image preview
 
 
 https://github.com/user-attachments/assets/cbf799bc-9fdd-4402-ab61-b4e31f1e264d
+
+*disclaimer* — I am not sure if images work yet.
 
 
 ## Features
