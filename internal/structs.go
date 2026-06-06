@@ -23,6 +23,7 @@ type Anime struct {
 	ProviderName   string // newly added for history migration
 	FillerEpisodes []int
 	IsAiring       bool
+	SkipRemoteSync bool `json:"-"`
 }
 
 type FuzzyDate struct {
@@ -61,8 +62,11 @@ type Episode struct {
 }
 
 type NextEpisode struct {
-	Number int
-	Links  []string
+	Number       int
+	Links        []string
+	ProviderName string
+	ProviderId   string
+	Mode         string
 }
 
 type playingVideo struct {
