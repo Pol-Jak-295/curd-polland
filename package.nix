@@ -41,7 +41,7 @@ in
 
     meta = {
       description = "Watch anime in CLI with AniList Tracking, Discord RPC, and automatic intro/outro skipping";
-      homepage = "https://github.com/Wraient/curd";
+      homepage = "https://github.com/Pol-Jak-295/curd-polland";
       license = lib.licenses.gpl3;
       platforms = lib.platforms.unix;
       maintainers = [lib.maintainers.diniamo];
