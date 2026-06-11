@@ -3,6 +3,10 @@
 A cli application to stream anime with [Anilist](https://anilist.co/) integration and Discord RPC written in golang.
 Works on Linux, MacOS and Windows.
 
+## Disclaimer
+
+This fork does not add functionality, only graphical improvements to fit my own preferences. For any feature requests, errors, donations and support please turn to the upstream repository at [Wraient/curd](https://github.com/Wraient/curd).
+
 ## Join the original discord server
 
 https://discord.gg/rrpBfu2gHq
@@ -17,12 +21,11 @@ Normal mode:
 
 https://github.com/user-attachments/assets/376e7580-b1af-40ee-82c3-154191f75b79
 
-Rofi with Image preview
+Rofi with Image preview - from upstream (wrong rasi configs)
 
 
 https://github.com/user-attachments/assets/cbf799bc-9fdd-4402-ab61-b4e31f1e264d
 
-*disclaimer* — I am not sure if images work yet.
 
 
 ## Features
@@ -78,10 +81,10 @@ sudo apt update
 sudo apt install mpv curl rofi ueberzugpp
 
 # For x86_64 systems:
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-linux-x86_64
+curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-x86_64
 
 # For ARM64 systems:
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-linux-arm64
+curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-arm64
 
 chmod +x curd
 sudo mv curd /usr/bin/
@@ -97,10 +100,10 @@ sudo dnf update
 sudo dnf install mpv curl rofi ueberzugpp
 
 # For x86_64 systems:
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-linux-x86_64
+curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-x86_64
 
 # For ARM64 systems:
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-linux-arm64
+curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-arm64
 
 chmod +x curd
 sudo mv curd /usr/bin/
@@ -116,10 +119,10 @@ sudo zypper refresh
 sudo zypper install mpv curl rofi ueberzugpp
 
 # For x86_64 systems:
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-linux-x86_64
+curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-x86_64
 
 # For ARM64 systems:
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-linux-arm64
+curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-arm64
 
 chmod +x curd
 sudo mv curd /usr/bin/
@@ -136,7 +139,7 @@ curd
     inputs = {
         nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
         curd = {
-            url = "github:Wraient/curd";
+            url = "github:Pol-Jak-295/curd";
             inputs.nixpkgs.follows = "nixpkgs";
         };
     }
@@ -159,10 +162,10 @@ curd
 Choose the appropriate binary for your system:
 ```bash
 # For Linux x86_64:
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-linux-x86_64
+curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-x86_64
 
 # For Linux ARM64:
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-linux-arm64
+curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-arm64
 
 chmod +x curd
 sudo mv curd /usr/bin/
@@ -180,46 +183,12 @@ sudo rm /usr/bin/curd
 For AUR-based distributions:
 
 ```bash
-yay -R curd
+yay -R curd-polland-git
+OR
+yay -S curd-polland-bin
 ```
 </details>
 
-### MacOS
-
-<details>
-<summary>MacOS Installation</summary>
-
-Install required dependencies
-```bash
-brew install mpv curl
-```
-
-Download the appropriate binary for your system:
-
-- For Apple Silicon (M1/M2) Macs:
-```bash
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-macos-arm64
-```
-
-- For Intel Macs:
-```bash
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-macos-x86_64
-```
-
-- For Universal Binary (works on both architectures):
-```bash
-curl -Lo curd https://github.com/Wraient/curd/releases/latest/download/curd-macos-universal
-```
-
-Then complete the installation:
-
-```bash
-chmod +x curd
-sudo mv curd /usr/local/bin/
-curd
-```
-
-</details>
 
 <details>
 <summary>Uninstallation</summary>
@@ -230,33 +199,8 @@ sudo rm /usr/local/bin/curd
 
 </details>
 
-### Windows
-
-<details>
-<summary>Windows Installation</summary>
-
-Option 1: Using the installer
-- Download and run the [Windows Installer](https://github.com/Wraient/curd/releases/latest/download/curd-windows-installer.exe)
-
-Option 2: Standalone executable
-- Download [curd-windows-x86_64.exe](https://github.com/Wraient/curd/releases/latest/download/curd-windows-x86_64.exe)
-</details>
 
 ## Data Storage
-
-<details>
-<summary>Windows</summary>
-Stroage: (Token, Timestamps, debug.log, etc) 
-
-```bash
-C:\.local\share\curd
-```
-
-Config : 
-
-```bash
-C:\Users\USERNAME\AppData\Roaming\Curd
-```
 
 </details>
 
@@ -402,13 +346,9 @@ If the browser reaches the localhost callback page but curd does not continue au
 | `MyAnimeListClientSecret` | String     | MAL OAuth client secret                   | Optional secret used for MyAnimeList browser login and token refresh.                             |
 | `MyAnimeListImported`     | Boolean    | `true`, `false`                           | Tracks whether the one-time AniList-to-MyAnimeList import prompt has already been handled.        |
 
-## Todo (fix)
-- Use Powershell for windows token input instead of notepad or cmd
-- Add a better way to do commands in windows (Convinience for users)
 
 ## Dependencies
 - mpv - Video player (required fallback)
-- iina - Optional mpv-based player on macOS
 - rofi - Selection menu
 - ueberzug - Display images in rofi
 - chromium - Required for Animepahe (auto-downloaded by default, but Termux users must install manually via `pkg install chromium`)
@@ -422,5 +362,6 @@ If the browser reaches the localhost callback page but curd does not continue au
 - [Jikan](https://jikan.moe/) - Get filler episode number
 
 ## Credits
+- [curd](https://github.com/Wraient/curd) - the original, upstream version
 - [ani-cli](https://github.com/pystardust/ani-cli) - Code for fetching anime url
 - [jerry](https://github.com/justchokingaround/jerry) - For the inspiration
