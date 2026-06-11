@@ -1,7 +1,14 @@
-# Curd
+# Curd (PolLand edition)
 
-A cli application to stream anime with [Anilist](https://anilist.co/) integration and Discord RPC written in golang.
-Works on Linux, MacOS and Windows.
+**What's different:**
+- Rofi themes (`.rasi` files) styled to match PolLand's Catppuccin Mocha + anime character theme
+- Linux-only (removed macOS/Windows build artifacts)
+- Custom PKGBUILD for AUR (`curd-polland-git`, `curd-polland-bin`)
+- Update URL points to this fork
+
+**What's NOT different:**
+- All functionality is identical to upstream
+- No new features, bug fixes, or provider changes
 
 ## Disclaimer
 
@@ -45,31 +52,31 @@ https://github.com/user-attachments/assets/cbf799bc-9fdd-4402-ab61-b4e31f1e264d
 
 
 ## Installing and Setup
-> **Note**: `Curd` requires `mpv`, `rofi`, and `ueberzugpp` for Rofi support and image preview. These are included in the installation instructions below for each distribution.
+> **Note**: `Curd` requires `mpv`, `rofi`, and `ueberzugpp` for Rofi support and image preview, as well as `chromium` for the animepahe ddos protection should you use that mirror. These are included in the installation instructions below for each distribution.
 
 ### Linux
 <details>
 <summary>Arch Linux / Manjaro (AUR-based systems)</summary>
 
-Using Yay:
+Using Yay (for paru just switch that out):
 
 ```bash
-yay -Sy curd
+yay -Sy curd-polland-git
 ```
 
-or using Paru:
+or the stable binary release:
 
 ```bash
-paru -Sy curd
+yay -Sy curd-polland-bin
 ```
 
 Or, to manually clone and install:
 
 ```bash
-git clone https://aur.archlinux.org/curd.git
+git clone https://aur.archlinux.org/curd-pollang-git.git
 cd curd
 makepkg -si
-sudo pacman -S rofi ueberzugpp
+sudo pacman -S rofi ueberzugpp chromium
 ```
 </details>
 
@@ -78,7 +85,7 @@ sudo pacman -S rofi ueberzugpp
 
 ```bash
 sudo apt update
-sudo apt install mpv curl rofi ueberzugpp
+sudo apt install mpv curl rofi ueberzugpp chromium
 
 # For x86_64 systems:
 curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-x86_64
@@ -97,7 +104,7 @@ curd
 
 ```bash
 sudo dnf update
-sudo dnf install mpv curl rofi ueberzugpp
+sudo dnf install mpv curl rofi ueberzugpp chromium
 
 # For x86_64 systems:
 curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-x86_64
@@ -116,7 +123,7 @@ curd
 
 ```bash
 sudo zypper refresh
-sudo zypper install mpv curl rofi ueberzugpp
+sudo zypper install mpv curl rofi ueberzugpp chromium
 
 # For x86_64 systems:
 curl -Lo curd https://github.com/Pol-Jak-295/curd-polland/releases/latest/download/curd-linux-x86_64
@@ -365,3 +372,4 @@ If the browser reaches the localhost callback page but curd does not continue au
 - [curd](https://github.com/Wraient/curd) - the original, upstream version
 - [ani-cli](https://github.com/pystardust/ani-cli) - Code for fetching anime url
 - [jerry](https://github.com/justchokingaround/jerry) - For the inspiration
+
