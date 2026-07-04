@@ -17,7 +17,7 @@ var version string // Will be set by ldflags during build
 
 func resolvedVersion() string {
 	if version == "" {
-		return "1.5.2"
+		return "2.0.1"
 	}
 
 	return version
@@ -47,6 +47,13 @@ func main() {
 	if err != nil {
 		fmt.Println("Error loading config:", err)
 		return
+	}
+	internal.SetCurdVersion(resolvedVersion())
+	if updated, migrateErr := internal.MigrateOnVersionUpgrade(configFilePath, &userCurdConfig, resolvedVersion()); migrateErr != nil {
+		fmt.Println("Error applying storage migration:", migrateErr)
+		return
+	} else if updated {
+		fmt.Println("Updated provider settings to the current default fallback stack.")
 	}
 	internal.SetGlobalConfig(&userCurdConfig)
 
@@ -82,6 +89,8 @@ func main() {
 	editConfig := flag.Bool("e", false, "Edit config")
 	subFlag := flag.Bool("sub", false, "Watch sub version")
 	dubFlag := flag.Bool("dub", false, "Watch dub version")
+	softSubFlag := flag.Bool("softsub", false, "Prefer soft subtitles when available (anineko)")
+	hardSubFlag := flag.Bool("hardsub", false, "Prefer hard subtitles when available (anineko)")
 	versionFlag := flag.Bool("v", false, "Print version information")
 
 	// Custom help/usage function
@@ -175,6 +184,7 @@ func main() {
 
 	// Setup screen for interactive mode (only if not changing token)
 	internal.ClearScreen()
+	internal.InstallTerminalInterruptHandler()
 	defer internal.RestoreScreen()
 
 	// Set SubOrDub based on the flags
@@ -182,6 +192,11 @@ func main() {
 		userCurdConfig.SubOrDub = "sub"
 	} else if *dubFlag {
 		userCurdConfig.SubOrDub = "dub"
+	}
+	if *softSubFlag {
+		userCurdConfig.SubStyle = "soft"
+	} else if *hardSubFlag {
+		userCurdConfig.SubStyle = "hard"
 	}
 
 	// Get the token from the token file for the configured remote tracker.
