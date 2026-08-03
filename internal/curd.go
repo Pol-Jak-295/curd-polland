@@ -430,98 +430,71 @@ func UpdateCurd(repo, fileName string) error {
 	if err != nil {
 		return fmt.Errorf("unable to find current executable: %v", err)
 	}
-
-	// Determine the correct binary name based on OS and architecture
-	var binaryName string
-	switch runtime.GOOS {
-	case "windows":
-		if runtime.GOARCH == "arm64" {
-			binaryName = "curd-windows-arm64.exe"
-		} else {
-			binaryName = "curd-windows-x86_64.exe"
-		}
-	case "darwin": // macOS
-		switch runtime.GOARCH {
-		case "amd64":
-			binaryName = "curd-macos-x86_64"
-		case "arm64":
-			binaryName = "curd-macos-arm64"
-		default:
-			binaryName = "curd-macos-universal"
-		}
-	case "linux":
-		switch runtime.GOARCH {
-		case "amd64":
-			binaryName = "curd-linux-x86_64"
-		case "arm64":
-			binaryName = "curd-linux-arm64"
-		default:
-			return fmt.Errorf("unsupported Linux architecture: %s", runtime.GOARCH)
-		}
-	default:
-		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
+	// Resolve symlinks so we replace the real binary (e.g. /usr/local/bin/curd).
+	if resolved, resolveErr := filepath.EvalSymlinks(executablePath); resolveErr == nil && resolved != "" {
+		executablePath = resolved
 	}
 
+	binaryName, err := curdReleaseBinaryName()
+	if err != nil {
+		return err
+	}
+	_ = fileName // retained for call-site compatibility
+
+	if strings.TrimSpace(repo) == "" {
+		repo = defaultUpdateRepo
+	}
 	// GitHub release URL for curd
 	url := fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", repo, binaryName)
 
-	// Temporary path for the downloaded curd executable
-	tmpPath := executablePath + ".tmp"
+	// Prefer a temp file next to the executable (same filesystem → atomic rename).
+	// Fall back to OS temp dir when the install dir is not writable (e.g. /usr/bin).
+	tmpPath, out, err := createUpdateTempFile(executablePath, binaryName)
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %v", err)
+	}
 
 	// Download the curd executable
-	resp, err := sharedHTTPClient.Get(url)
+	client := sharedHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Minute}
+	}
+	resp, err := client.Get(url)
 	if err != nil {
+		out.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to download file: %v", err)
 	}
 	defer resp.Body.Close()
 
 	// Check if the download was successful
 	if resp.StatusCode != http.StatusOK {
+		out.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to download file: received status code %d", resp.StatusCode)
-	}
-
-	// Create a new temporary file
-	out, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("failed to create temporary file: %v", err)
-	}
-	defer out.Close()
-
-	// Set file permissions
-	if err := out.Chmod(0755); err != nil {
-		return fmt.Errorf("failed to set file permissions: %v", err)
 	}
 
 	// Copy the downloaded content to the temporary file
 	if _, err := io.Copy(out, resp.Body); err != nil {
+		out.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to write to temporary file: %v", err)
 	}
-
-	// Close the file before renaming
-	out.Close()
-
-	// Replace the old executable with the new one
-	if runtime.GOOS == "windows" {
-		// On Windows, we need to rename the old file first
-		oldPath := executablePath + ".old"
-		err = os.Rename(executablePath, oldPath)
-		if err != nil {
-			return fmt.Errorf("failed to rename old executable: %v", err)
-		}
-		err = os.Rename(tmpPath, executablePath)
-		if err != nil {
-			// Try to restore the old executable if the rename fails
-			os.Rename(oldPath, executablePath)
-			return fmt.Errorf("failed to rename new executable: %v", err)
-		}
-		os.Remove(oldPath)
-	} else {
-		// On Unix systems, we can directly rename
-		if err := os.Rename(tmpPath, executablePath); err != nil {
-			return fmt.Errorf("failed to replace executable: %v", err)
-		}
+	if err := out.Chmod(0755); err != nil {
+		out.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to set file permissions: %v", err)
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to close temporary file: %v", err)
 	}
 
+	// Replace the old executable (prompts for sudo if the install path is not writable).
+	if err := replaceExecutable(tmpPath, executablePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
 	return nil
 }
 
@@ -704,11 +677,16 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 						ExitCurd(fmt.Errorf("Failed to select category"))
 					}
 
-					if categorySelection.Key == "-1" {
+					categorySelection = NormalizeSelectionKey(categorySelection)
+					if SelectionMeansQuit(categorySelection) {
 						ExitCurd(nil)
 					}
 
-					if categorySelection.Key == "-2" {
+					if SelectionMeansBack(categorySelection) {
+						continue
+					}
+					if categorySelection.Key == "" {
+						// Empty/cancelled selection — re-show category menu.
 						continue
 					}
 
@@ -819,18 +797,22 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 
 					Log(anilistSelectedOption)
 
-					if anilistSelectedOption.Key == "-1" {
+					anilistSelectedOption = NormalizeSelectionKey(anilistSelectedOption)
+					if SelectionMeansQuit(anilistSelectedOption) {
 						ExitCurd(nil)
 					}
 
 					// Handle back navigation - go back to category selection
-					if anilistSelectedOption.Key == "-2" {
+					if SelectionMeansBack(anilistSelectedOption) {
 						if userCurdConfig.CurrentCategory {
 							// If CurrentCategory is forced, back means quit
 							ExitCurd(nil)
 						}
 						ClearScreen()
 						continue categorySelectionLoop
+					}
+					if anilistSelectedOption.Key == "" {
+						continue animeSelectionLoop
 					}
 
 					if anilistSelectedOption.Label == "add_new" || anilistSelectedOption.Key == "add_new" {
@@ -1162,6 +1144,21 @@ func SetupCurd(userCurdConfig *CurdConfig, anime *Anime, user *User, databaseAni
 			}
 		}
 
+		if anime.TotalEpisodes == 0 { // If the mapped provider alone couldn't provide a total
+			CurdOut("Attempting to determine total episodes from the full provider stack.")
+			totalQuery := animeSearchTitle(anime)
+			if strings.TrimSpace(totalQuery) == "" {
+				totalQuery = string(userQuery)
+			}
+			stackTotal, stackErr := determineProviderTotalEpisodes(userCurdConfig, totalQuery, anime, userCurdConfig.SubOrDub)
+			if stackErr != nil {
+				Log(fmt.Sprintf("Failed to determine total episodes from provider stack: %v", stackErr))
+			} else {
+				anime.TotalEpisodes = stackTotal
+				CurdOut(fmt.Sprintf("Retrieved total episodes from provider stack: %d", anime.TotalEpisodes))
+			}
+		}
+
 		if anime.TotalEpisodes == 0 { // If provider episode list did not have a usable total
 			CurdOut("Attempting to retrieve total episodes from anime search results.")
 			animeList, err := SearchAnime(string(userQuery), userCurdConfig.SubOrDub)
@@ -1318,96 +1315,23 @@ func StartCurd(userCurdConfig *CurdConfig, anime *Anime) string {
 			anime.ProviderId = anime.Ep.NextEpisode.ProviderId
 		}
 	} else {
-		// Get episode link
-		episodeResult, err := ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
-		link := episodeResult.Links
-		if len(link) > 0 {
-			Log(fmt.Sprintf("Links details from %s/%s: %+v", episodeResult.ProviderName, episodeResult.Mode, link))
+		// Preferred-first resolve; diagnosed recovery only after that fails.
+		episodeResult, ok := resolveEpisodeLinksWithRecovery(userCurdConfig, anime, nil, true)
+		if !ok {
+			RestoreScreen()
+			return ""
 		}
-		if err != nil {
-			linkErr := err
-			Log(fmt.Sprintf("ResolveEpisodeURL failed: %v", linkErr))
-			if reselectProviderAnime(userCurdConfig, anime, linkErr) {
-				episodeResult, err = ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
-				link = episodeResult.Links
-				if err == nil {
-					Log(fmt.Sprintf("Successfully retrieved %s/%s episode link after provider reselect. Links count: %d", episodeResult.ProviderName, episodeResult.Mode, len(link)))
-					anime.Ep.Links = link
-					applyStreamPlaybackHints(anime, anime.Ep.Links, episodeResult.LinkHints)
-					goto episodeLinksReady
-				}
-				linkErr = err
-				Log(fmt.Sprintf("ResolveEpisodeURL still failed after provider reselect: %v", linkErr))
-			}
-			for {
-				switch promptEpisodeLinkFailureRecovery(userCurdConfig) {
-				case "remap":
-					if RemapAnimeProviderOnEpisodeFailure(userCurdConfig, anime, nil) {
-						episodeResult, err = ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
-						link = episodeResult.Links
-						if err == nil && len(link) > 0 {
-							anime.Ep.Links = link
-							applyStreamPlaybackHints(anime, anime.Ep.Links, episodeResult.LinkHints)
-							goto episodeLinksReady
-						}
-						if err != nil {
-							linkErr = err
-							Log(fmt.Sprintf("ResolveEpisodeURL failed after provider remap: %v", linkErr))
-						}
-					}
-				case "episode":
-					episodeProviderName, episodeProviderID := AnimeProviderID(anime)
-					episodeList, listErr := EpisodesList(QualifyProviderID(episodeProviderName, episodeProviderID), userCurdConfig.SubOrDub)
-					if listErr != nil {
-						CurdOut("No episode list found: " + listErr.Error())
-						Log(fmt.Sprintf("EpisodesList failed: %v", listErr))
-						continue
-					}
-					if len(episodeList) == 0 {
-						CurdOut("No episodes were returned by the current provider for this anime.")
-						Log(fmt.Sprintf("EpisodesList returned no episodes for provider %s and id %s after ResolveEpisodeURL error: %v", episodeProviderName, episodeProviderID, linkErr))
-						continue
-					}
-					episodeNumber, promptErr := promptPositiveEpisodeNumber(userCurdConfig, fmt.Sprintf("Enter the episode (%v episodes)", episodeList[len(episodeList)-1]))
-					if promptErr != nil {
-						Log("Invalid episode input: " + promptErr.Error())
-						CurdOut("Invalid episode number")
-						continue
-					}
-					anime.Ep.Number = episodeNumber
-					episodeResult, err = ResolveEpisodeURLForPlayback(*userCurdConfig, anime, anime.Ep.Number)
-					link = episodeResult.Links
-					if err == nil && len(link) > 0 {
-						anime.Ep.Links = link
-						applyStreamPlaybackHints(anime, anime.Ep.Links, episodeResult.LinkHints)
-						goto episodeLinksReady
-					}
-					if err != nil {
-						linkErr = err
-						Log(fmt.Sprintf("ResolveEpisodeURL failed for episode %d: %v", anime.Ep.Number, linkErr))
-					} else {
-						CurdOut("Failed to get episode link")
-					}
-				default:
-					RestoreScreen()
-					return ""
-				}
-			}
-		} else {
-			Log(fmt.Sprintf("Successfully retrieved %s/%s episode link on first try. Links count: %d", episodeResult.ProviderName, episodeResult.Mode, len(link)))
-		}
-		anime.Ep.Links = link
+		Log(fmt.Sprintf("Successfully retrieved %s/%s episode link. Links count: %d", episodeResult.ProviderName, episodeResult.Mode, len(episodeResult.Links)))
+		anime.Ep.Links = episodeResult.Links
 		applyStreamPlaybackHints(anime, anime.Ep.Links, episodeResult.LinkHints)
 	}
 
-episodeLinksReady:
 	if len(anime.Ep.Links) == 0 {
 		CurdOut("No episode links found")
 		RestoreScreen()
 		return ""
-	} else {
-		Log(fmt.Sprintf("Episode links validation passed. Found %d links", len(anime.Ep.Links)))
 	}
+	Log(fmt.Sprintf("Episode links validation passed. Found %d links", len(anime.Ep.Links)))
 
 	// Modify the goroutine in main.go where next episode links are fetched
 	// Get next episode link in parallel
@@ -1473,14 +1397,8 @@ episodeLinksReady:
 	} else {
 		CurdOut(fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number))
 	}
-	mpvSocketPath, err := StartVideo(PrioritizeLink(anime.Ep.Links), []string{}, fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number), anime)
-
-	if err != nil {
-		Log("Failed to start mpv")
-		exitWithRestore(1)
-	}
-
-	return mpvSocketPath
+	title := fmt.Sprintf("%s - Episode %d", GetAnimeName(*anime), anime.Ep.Number)
+	return StartVideoWithProviderFallback(userCurdConfig, anime, title)
 }
 
 func resolveRuntimeProviderID(userCurdConfig *CurdConfig, anime *Anime) error {
@@ -1632,7 +1550,8 @@ func CheckAndDownloadFiles(storagePath string, filesToCheck []string) error {
 func getEntriesByCategory(list AnimeList, category string) []Entry {
 	switch category {
 	case "ALL":
-		// Combine all categories into one slice
+		// Combine all categories into one slice. Dedupe by Media.ID so Show All
+		// never surfaces the same anime twice (e.g. stale cache / dual-track edge cases).
 		allEntries := make([]Entry, 0)
 		allEntries = append(allEntries, list.Watching...)
 		allEntries = append(allEntries, list.Completed...)
@@ -1640,22 +1559,22 @@ func getEntriesByCategory(list AnimeList, category string) []Entry {
 		allEntries = append(allEntries, list.Dropped...)
 		allEntries = append(allEntries, list.Planning...)
 		allEntries = append(allEntries, list.Rewatching...)
-		return allEntries
+		return dedupeEntriesByMediaID(allEntries)
 	case "CURRENT":
 		currentEntries := make([]Entry, 0, len(list.Watching)+len(list.Rewatching))
 		currentEntries = append(currentEntries, list.Watching...)
 		currentEntries = append(currentEntries, list.Rewatching...)
-		return currentEntries
+		return dedupeEntriesByMediaID(currentEntries)
 	case "COMPLETED":
-		return list.Completed
+		return dedupeEntriesByMediaID(list.Completed)
 	case "PAUSED":
-		return list.Paused
+		return dedupeEntriesByMediaID(list.Paused)
 	case "DROPPED":
-		return list.Dropped
+		return dedupeEntriesByMediaID(list.Dropped)
 	case "PLANNING":
-		return list.Planning
+		return dedupeEntriesByMediaID(list.Planning)
 	case "REWATCHING": // Added for completeness, though "ALL" covers it.
-		return list.Rewatching
+		return dedupeEntriesByMediaID(list.Rewatching)
 	default:
 		return []Entry{}
 	}

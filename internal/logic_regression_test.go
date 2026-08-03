@@ -121,6 +121,126 @@ func TestSelectionCtrlCSelectsQuit(t *testing.T) {
 	}
 }
 
+func TestVimKeysNormalModeNavigatesWithoutFiltering(t *testing.T) {
+	prev := GetGlobalConfig()
+	SetGlobalConfig(&CurdConfig{VimKeys: true})
+	t.Cleanup(func() { SetGlobalConfig(prev) })
+
+	model := &Model{
+		allOptions: []SelectionOption{
+			{Key: "1", Label: "Alpha"},
+			{Key: "2", Label: "Bravo"},
+			{Key: "3", Label: "Charlie"},
+		},
+		filteredKeys: []SelectionOption{
+			{Key: "1", Label: "Alpha"},
+			{Key: "2", Label: "Bravo"},
+			{Key: "3", Label: "Charlie"},
+		},
+		selected:   0,
+		isHomeMenu: false,
+	}
+
+	// j should move down, not type into filter.
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	model = updated.(*Model)
+	if model.selected != 1 {
+		t.Fatalf("j should move down, selected=%d", model.selected)
+	}
+	if model.filter != "" {
+		t.Fatalf("j must not enter filter in normal mode, filter=%q", model.filter)
+	}
+
+	// k moves up.
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	model = updated.(*Model)
+	if model.selected != 0 {
+		t.Fatalf("k should move up, selected=%d", model.selected)
+	}
+
+	// / enters search mode; then typing filters — including hjkl as query text.
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	model = updated.(*Model)
+	if !model.filterActive {
+		t.Fatal("expected / to enter search mode")
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	model = updated.(*Model)
+	if model.filter != "j" {
+		t.Fatalf("in search mode j should type into query, got filter=%q selected=%d", model.filter, model.selected)
+	}
+	if model.selected != 0 {
+		t.Fatalf("in search mode j must not move selection, selected=%d", model.selected)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	model = updated.(*Model)
+	if model.filter != "jk" {
+		t.Fatalf("expected filter jk in search mode, got %q", model.filter)
+	}
+
+	// Arrows still navigate results while searching.
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(*Model)
+	// After filtering to "jk" there may be no matches; selection stays valid either way.
+	_ = model
+}
+
+func TestFilterQuitOnlyShowsQuitNotBack(t *testing.T) {
+	model := &Model{
+		allOptions: []SelectionOption{
+			{Key: "CURRENT", Label: "Currently Watching"},
+			{Key: "ALL", Label: "Show All"},
+		},
+		isHomeMenu: false, // action-style menu that has Back
+		filter:     "quit",
+	}
+	model.filterOptions()
+	if len(model.filteredKeys) != 1 || model.filteredKeys[0].Key != "-1" {
+		t.Fatalf("filter 'quit' should only pin Quit, got %#v", model.filteredKeys)
+	}
+}
+
+func TestSelectionMeansQuitAndBack(t *testing.T) {
+	if !SelectionMeansQuit(SelectionOption{Key: "-1"}) {
+		t.Fatal("key -1 should mean quit")
+	}
+	if !SelectionMeansQuit(SelectionOption{Label: "Quit"}) {
+		t.Fatal("label Quit should mean quit")
+	}
+	if !SelectionMeansBack(SelectionOption{Key: "-2"}) {
+		t.Fatal("key -2 should mean back")
+	}
+	if !SelectionMeansBack(SelectionOption{Label: "Back to menu"}) {
+		t.Fatal("Back to menu should mean back")
+	}
+	got := NormalizeSelectionKey(SelectionOption{Label: "quit"})
+	if got.Key != "-1" {
+		t.Fatalf("NormalizeSelectionKey quit -> %#v", got)
+	}
+}
+
+func TestLegacyModeStillTypeToFilter(t *testing.T) {
+	prev := GetGlobalConfig()
+	SetGlobalConfig(&CurdConfig{VimKeys: false})
+	t.Cleanup(func() { SetGlobalConfig(prev) })
+
+	model := &Model{
+		allOptions: []SelectionOption{
+			{Key: "1", Label: "Alpha"},
+			{Key: "2", Label: "Bravo"},
+		},
+		filteredKeys: []SelectionOption{
+			{Key: "1", Label: "Alpha"},
+			{Key: "2", Label: "Bravo"},
+		},
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	model = updated.(*Model)
+	if model.filter != "j" {
+		t.Fatalf("legacy mode should type-to-filter, got filter=%q", model.filter)
+	}
+}
+
 func TestSelectionEnterWithNoMatchesDoesNotPanic(t *testing.T) {
 	model := &Model{filteredKeys: nil, selected: 0}
 	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -185,10 +305,14 @@ func TestPopulateConfigFallsBackToDefaultsOnInvalidValues(t *testing.T) {
 	config := PopulateConfig(map[string]string{
 		"PercentageToMarkComplete": "not-a-number",
 		"SkipOp":                   "not-a-bool",
+		"MpvPlaybackStartTimeout":  "not-a-number",
 	})
 
 	if config.PercentageToMarkComplete != 85 {
 		t.Fatalf("expected default completion percentage, got %d", config.PercentageToMarkComplete)
+	}
+	if config.MpvPlaybackStartTimeout != DefaultMpvPlaybackStartTimeout {
+		t.Fatalf("expected default playback timeout, got %d", config.MpvPlaybackStartTimeout)
 	}
 	if !config.SkipOp {
 		t.Fatalf("expected invalid bool to fall back to default true")
@@ -281,6 +405,147 @@ func TestParseAnimeListMalformedInputReturnsEmptyList(t *testing.T) {
 	}
 	if got := ParseAnimeList(map[string]interface{}{"data": nil}); len(getEntriesByCategory(got, "ALL")) != 0 {
 		t.Fatalf("expected nil data input to produce empty list")
+	}
+}
+
+func TestParseAnimeListSkipsCustomListsThatReExportEntries(t *testing.T) {
+	// AniList returns the same MediaList entry under the status list and again
+	// under each custom list that includes it.
+	input := map[string]interface{}{
+		"data": map[string]interface{}{
+			"MediaListCollection": map[string]interface{}{
+				"lists": []interface{}{
+					map[string]interface{}{
+						"name":         "Watching",
+						"isCustomList": false,
+						"entries": []interface{}{
+							map[string]interface{}{
+								"id":        float64(1001),
+								"status":    "CURRENT",
+								"progress":  float64(3),
+								"repeat":    float64(0),
+								"updatedAt": float64(1_700_000_000),
+								"media": map[string]interface{}{
+									"id":       float64(42),
+									"idMal":    float64(420),
+									"episodes": float64(12),
+									"duration": float64(24),
+									"format":   "TV",
+									"title": map[string]interface{}{
+										"english": "Example Show",
+										"romaji":  "Example Show",
+										"native":  "例",
+									},
+									"status": "RELEASING",
+								},
+							},
+						},
+					},
+					map[string]interface{}{
+						"name":         "Favorites",
+						"isCustomList": true,
+						"entries": []interface{}{
+							map[string]interface{}{
+								"id":        float64(1001),
+								"status":    "CURRENT",
+								"progress":  float64(3),
+								"repeat":    float64(0),
+								"updatedAt": float64(1_700_000_000),
+								"media": map[string]interface{}{
+									"id":       float64(42),
+									"idMal":    float64(420),
+									"episodes": float64(12),
+									"duration": float64(24),
+									"format":   "TV",
+									"title": map[string]interface{}{
+										"english": "Example Show",
+										"romaji":  "Example Show",
+										"native":  "例",
+									},
+									"status": "RELEASING",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	list := ParseAnimeList(input)
+	if len(list.Watching) != 1 {
+		t.Fatalf("expected custom-list re-export to be skipped, watching=%d", len(list.Watching))
+	}
+	all := getEntriesByCategory(list, "ALL")
+	if len(all) != 1 || all[0].Media.ID != 42 {
+		t.Fatalf("Show All should list media 42 once, got %#v", all)
+	}
+}
+
+func TestParseAnimeListDedupesSameMediaWithoutIsCustomListFlag(t *testing.T) {
+	// Older/cached payloads may omit isCustomList; still dedupe by media ID.
+	input := map[string]interface{}{
+		"data": map[string]interface{}{
+			"MediaListCollection": map[string]interface{}{
+				"lists": []interface{}{
+					map[string]interface{}{
+						"name": "Watching",
+						"entries": []interface{}{
+							map[string]interface{}{
+								"id":        float64(1),
+								"status":    "CURRENT",
+								"progress":  float64(1),
+								"updatedAt": float64(1_700_000_000),
+								"media": map[string]interface{}{
+									"id":    float64(7),
+									"title": map[string]interface{}{"english": "Seven", "romaji": "Seven"},
+								},
+							},
+						},
+					},
+					map[string]interface{}{
+						"name": "Seasonal",
+						"entries": []interface{}{
+							map[string]interface{}{
+								"id":        float64(1),
+								"status":    "CURRENT",
+								"progress":  float64(1),
+								"updatedAt": float64(1_700_000_000),
+								"media": map[string]interface{}{
+									"id":    float64(7),
+									"title": map[string]interface{}{"english": "Seven", "romaji": "Seven"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	list := ParseAnimeList(input)
+	if len(list.Watching) != 1 {
+		t.Fatalf("expected media-ID dedupe without isCustomList, watching=%d", len(list.Watching))
+	}
+}
+
+func TestGetEntriesByCategoryDedupesAcrossBuckets(t *testing.T) {
+	list := AnimeList{
+		Watching: []Entry{
+			{Media: Media{ID: 1, Title: AnimeTitle{English: "A"}}, Status: "CURRENT"},
+			{Media: Media{ID: 1, Title: AnimeTitle{English: "A (dup)"}}, Status: "CURRENT"},
+		},
+		Completed: []Entry{
+			{Media: Media{ID: 2, Title: AnimeTitle{English: "B"}}, Status: "COMPLETED"},
+		},
+	}
+	all := getEntriesByCategory(list, "ALL")
+	if len(all) != 2 {
+		t.Fatalf("expected 2 unique media IDs in ALL, got %d (%#v)", len(all), all)
+	}
+	current := getEntriesByCategory(list, "CURRENT")
+	if len(current) != 1 || current[0].Media.ID != 1 {
+		t.Fatalf("expected CURRENT to dedupe watching, got %#v", current)
 	}
 }
 

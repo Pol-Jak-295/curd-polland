@@ -28,6 +28,24 @@ func anilistTokenPath(config *CurdConfig) string {
 	return filepath.Join(os.ExpandEnv(config.StoragePath), "anilist_token.json")
 }
 
+// anilistTokenForAPI resolves the real AniList access token for GraphQL calls.
+// Callers pass the tracker token (user.Token), which is the MyAnimeList token
+// when tracking is configured as myanimelist/both; AniList rejects that with
+// "Invalid token", which the app misread as expiry and forced a browser
+// re-auth on every run. Prefer the token persisted at anilist_token.json and
+// fall back to the caller's token only when none is stored.
+func anilistTokenForAPI(config *CurdConfig, current string) string {
+	if config == nil {
+		config = GetGlobalConfig()
+	}
+	if config != nil && strings.TrimSpace(config.StoragePath) != "" {
+		if stored, err := GetTokenFromFile(anilistTokenPath(config)); err == nil && strings.TrimSpace(stored) != "" {
+			return stored
+		}
+	}
+	return current
+}
+
 func ReauthenticateAniList(config *CurdConfig, user *User, reason string) (string, error) {
 	if config == nil {
 		config = GetGlobalConfig()
@@ -67,6 +85,15 @@ func tryRenewAniListTokenForAPI(currentToken string, reason string) (string, boo
 	config := GetGlobalConfig()
 	if config == nil {
 		return currentToken, false, nil
+	}
+
+	// The failing token may be a tracker token (e.g. the MyAnimeList token when
+	// tracking is myanimelist/both) rather than the AniList token. Don't force a
+	// browser OAuth re-auth in that case; just use the stored AniList token.
+	if stored, err := GetTokenFromFile(anilistTokenPath(config)); err == nil && strings.TrimSpace(stored) != "" {
+		if currentToken == "" || currentToken != stored {
+			return stored, true, nil
+		}
 	}
 
 	newToken, err := ReauthenticateAniList(config, GetGlobalUser(), reason)

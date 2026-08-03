@@ -21,6 +21,7 @@ import (
 // Model represents the application state for the selection prompt
 type Model struct {
 	filter         string
+	filterActive   bool // when VimKeys is on: true after "/" enters search mode
 	filteredKeys   []SelectionOption
 	allOptions     []SelectionOption
 	selected       int
@@ -29,6 +30,7 @@ type Model struct {
 	scrollOffset   int
 	addNewOption   bool
 	isHomeMenu     bool // If true, ESC quits; if false, ESC goes back
+	preserveOrder  bool // skip alphabetical sort (action menus with a fixed priority)
 }
 
 type optionsRefreshedMsg struct {
@@ -83,6 +85,45 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
+func (m *Model) moveSelectionDown() {
+	if m.selected < len(m.filteredKeys)-1 {
+		m.selected++
+	}
+	if m.selected >= m.scrollOffset+m.visibleItemsCount() {
+		m.scrollOffset++
+	}
+}
+
+func (m *Model) moveSelectionUp() {
+	if m.selected > 0 {
+		m.selected--
+	}
+	if m.selected < m.scrollOffset {
+		m.scrollOffset--
+	}
+}
+
+func (m *Model) confirmSelection() tea.Cmd {
+	if len(m.filteredKeys) == 0 {
+		return nil
+	}
+	if m.filteredKeys[m.selected].Key == "add_new" {
+		CurdOut("Adding a new anime...")
+		m.filteredKeys[m.selected] = SelectionOption{Label: "add_new", Key: "0"}
+	}
+	return tea.Quit
+}
+
+func (m *Model) exitMenu() tea.Cmd {
+	if m.isHomeMenu {
+		m.filteredKeys = []SelectionOption{{Key: "-1", Label: "Quit"}}
+	} else {
+		m.filteredKeys = []SelectionOption{{Key: "-2", Label: "Back"}}
+	}
+	m.selected = 0
+	return tea.Quit
+}
+
 // Update handles user input and updates the model
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle terminal resize messages
@@ -92,67 +133,97 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	updateFilter := false
+	vimKeys := VimKeysEnabled(nil)
 
 	switch msg := msg.(type) {
 	case optionsRefreshedMsg:
 		m.replaceOptions(msg.options)
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.String() {
+		key := msg.String()
+
+		switch key {
 		case "ctrl+c":
 			m.filteredKeys = []SelectionOption{{Key: "-1", Label: "Quit"}}
 			m.selected = 0
 			return m, tea.Quit
-		case "esc":
-			// ESC: quit on home menu, go back on sub-menus
-			if m.isHomeMenu {
-				// Quit
-				m.filteredKeys = []SelectionOption{{Key: "-1", Label: "Quit"}}
-				m.selected = 0
-			} else {
-				// Go back
-				m.filteredKeys = []SelectionOption{{Key: "-2", Label: "Back"}}
-				m.selected = 0
+		}
+
+		// --- Vim-enabled selection: normal mode vs search mode ---
+		// Normal: hjkl/arrows move. Search (after /): like vim's / — every
+		// printable key including hjkl is part of the query; arrows/tab still move.
+		if vimKeys {
+			if m.filterActive {
+				switch key {
+				case "esc":
+					// Leave search mode but keep the current filter applied.
+					m.filterActive = false
+					return m, nil
+				case "enter":
+					return m, m.confirmSelection()
+				case "backspace":
+					if len(m.filter) > 0 {
+						m.filter = m.filter[:len(m.filter)-1]
+						updateFilter = true
+					}
+				case "down", "tab", "ctrl+n":
+					m.moveSelectionDown()
+				case "up", "shift+tab", "ctrl+p":
+					m.moveSelectionUp()
+				// left/right: optional result navigation without stealing hjkl
+				case "left":
+					m.moveSelectionUp()
+				case "right":
+					m.moveSelectionDown()
+				default:
+					// hjkl and all other printables go into the search query.
+					if len(key) == 1 && key >= " " && key <= "~" {
+						m.filter += key
+						updateFilter = true
+					}
+				}
+				break
 			}
-			return m, tea.Quit
+
+			// Normal mode: motions only; "/" or "?" starts search.
+			switch key {
+			case "/", "?":
+				m.filterActive = true
+				return m, nil
+			case "esc":
+				return m, m.exitMenu()
+			case "enter":
+				return m, m.confirmSelection()
+			case "down", "j", "tab", "ctrl+n", "l", "right":
+				m.moveSelectionDown()
+			case "up", "k", "shift+tab", "ctrl+p", "h", "left":
+				m.moveSelectionUp()
+			case "backspace":
+				// Ignore — filter is only edited in search mode.
+			default:
+				// Do not type into filter in normal mode.
+			}
+			break
+		}
+
+		// --- Legacy behavior: every printable key filters immediately ---
+		switch key {
+		case "esc":
+			return m, m.exitMenu()
 		case "backspace":
 			if len(m.filter) > 0 {
 				m.filter = m.filter[:len(m.filter)-1]
 				updateFilter = true
 			}
 		case "down", "tab", "ctrl+n":
-			// Move the selection cursor down
-			if m.selected < len(m.filteredKeys)-1 {
-				m.selected++
-			}
-
-			// Scroll the view if necessary
-			if m.selected >= m.scrollOffset+m.visibleItemsCount() {
-				m.scrollOffset++
-			}
+			m.moveSelectionDown()
 		case "up", "shift+tab", "ctrl+p":
-			// Move the selection cursor up
-			if m.selected > 0 {
-				m.selected--
-			}
-
-			// Scroll the view if necessary
-			if m.selected < m.scrollOffset {
-				m.scrollOffset--
-			}
+			m.moveSelectionUp()
 		case "enter":
-			if len(m.filteredKeys) == 0 {
-				return m, nil
-			}
-			if m.filteredKeys[m.selected].Key == "add_new" {
-				CurdOut("Adding a new anime...")
-				m.filteredKeys[m.selected] = SelectionOption{Label: "add_new", Key: "0"}
-				return m, tea.Quit
-			}
-			return m, tea.Quit
+			return m, m.confirmSelection()
 		default:
-			if len(msg.String()) == 1 && msg.String() >= " " && msg.String() <= "~" {
-				m.filter += msg.String()
+			if len(key) == 1 && key >= " " && key <= "~" {
+				m.filter += key
 				updateFilter = true
 			}
 		}
@@ -214,11 +285,26 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	// Display the search prompt and filter with colors
-	b.WriteString(titleStyle.Render("Search") + " (Press " +
-		quitHintStyle.Render("Ctrl+C") + " to quit):\n")
-
-	b.WriteString(filterLabelStyle.Render("Filter: ") +
-		filterTextStyle.Render(m.filter) + "\n\n") // Added extra newline for spacing
+	if VimKeysEnabled(nil) {
+		if m.filterActive {
+			b.WriteString(titleStyle.Render("Search") + " (type query · arrows move · Enter: select · Esc: normal):\n")
+			b.WriteString(filterLabelStyle.Render("/") +
+				filterTextStyle.Render(m.filter+"▌") + "\n\n")
+		} else {
+			b.WriteString(titleStyle.Render("Select") + " (hjkl/arrows · / search · Enter · Esc):\n")
+			if m.filter != "" {
+				b.WriteString(filterLabelStyle.Render("Filter: ") +
+					filterTextStyle.Render(m.filter) + "\n\n")
+			} else {
+				b.WriteString(quitHintStyle.Render("Press / to search") + "\n\n")
+			}
+		}
+	} else {
+		b.WriteString(titleStyle.Render("Search") + " (Press " +
+			quitHintStyle.Render("Ctrl+C") + " to quit):\n")
+		b.WriteString(filterLabelStyle.Render("Filter: ") +
+			filterTextStyle.Render(m.filter) + "\n\n")
+	}
 
 	if len(m.filteredKeys) == 0 {
 		b.WriteString(noMatchesStyle.Render("No matches found.") + "\n")
@@ -262,12 +348,14 @@ func (m *Model) filterOptions() {
 		}
 	}
 
-	// Sort the filtered options alphabetically unless this is a menu selection
-	isMenu := false
-	for _, opt := range m.allOptions {
-		if opt.Key == "ALL" || opt.Key == "CURRENT" {
-			isMenu = true
-			break
+	// Sort alphabetically unless this is a home menu or an ordered action list.
+	isMenu := m.preserveOrder
+	if !isMenu {
+		for _, opt := range m.allOptions {
+			if opt.Key == "ALL" || opt.Key == "CURRENT" {
+				isMenu = true
+				break
+			}
 		}
 	}
 
@@ -277,12 +365,16 @@ func (m *Model) filterOptions() {
 		})
 	}
 
-	// Determine whether the current filter is a substring of the pinned labels.
-	// When the filter matches "back" (e.g. "b", "ba", "bac", "back"), Back should
-	// appear BEFORE "Add new anime" so it is easy to reach. Otherwise keep the
-	// default order: Add new anime → Back → Quit.
-	// All three pinned items are always shown regardless of filter text.
-	filterLower := strings.ToLower(m.filter)
+	// Pin Back / Add new / Quit only when the filter is empty or matches their labels.
+	// Previously Quit/Back were always forced visible, so "/quit" still showed Back first
+	// and Enter could select the wrong row.
+	filterLower := strings.ToLower(strings.TrimSpace(m.filter))
+	pinMatches := func(label string) bool {
+		if filterLower == "" {
+			return true
+		}
+		return strings.Contains(strings.ToLower(label), filterLower)
+	}
 	backMatchesFilter := filterLower != "" && strings.Contains("back", filterLower)
 
 	// If filter targets "back", pin it above Add new anime
@@ -290,19 +382,20 @@ func (m *Model) filterOptions() {
 		m.filteredKeys = append(m.filteredKeys, SelectionOption{Label: "Back", Key: "-2"})
 	}
 
-	// Add new anime is always shown (pinned)
-	if m.addNewOption {
-
+	// Add new anime when unfiltered or filter matches
+	if m.addNewOption && pinMatches("Add new anime") {
 		m.filteredKeys = append(m.filteredKeys, SelectionOption{Label: "Add new anime", Key: "add_new"})
 	}
 
-	// Back in its default position (after Add new anime) when filter doesn't target it
-	if !m.isHomeMenu && !backMatchesFilter {
+	// Back in its default position when unfiltered (or filter matches "back" handled above)
+	if !m.isHomeMenu && !backMatchesFilter && pinMatches("Back") {
 		m.filteredKeys = append(m.filteredKeys, SelectionOption{Label: "Back", Key: "-2"})
 	}
 
-	// Quit is always last
-	m.filteredKeys = append(m.filteredKeys, SelectionOption{Label: "Quit", Key: "-1"})
+	// Quit last — only when unfiltered or filter matches "quit"
+	if pinMatches("Quit") {
+		m.filteredKeys = append(m.filteredKeys, SelectionOption{Label: "Quit", Key: "-1"})
+	}
 }
 
 func detectHomeMenu(options []SelectionOption) bool {
@@ -312,6 +405,35 @@ func detectHomeMenu(options []SelectionOption) bool {
 		}
 	}
 	return false
+}
+
+// SelectionMeansQuit reports whether the user chose Quit (by key or label).
+func SelectionMeansQuit(opt SelectionOption) bool {
+	if opt.Key == "-1" {
+		return true
+	}
+	label := strings.TrimSpace(opt.Label)
+	return strings.EqualFold(label, "Quit") || strings.EqualFold(label, "quit")
+}
+
+// SelectionMeansBack reports whether the user chose Back / dismiss (by key or label).
+func SelectionMeansBack(opt SelectionOption) bool {
+	if opt.Key == "-2" || strings.EqualFold(opt.Key, "back") {
+		return true
+	}
+	label := strings.ToLower(strings.TrimSpace(opt.Label))
+	return label == "back" || label == "back to menu" || label == "back to list"
+}
+
+// NormalizeSelectionKey forces Quit/Back labels onto the canonical keys used by callers.
+func NormalizeSelectionKey(opt SelectionOption) SelectionOption {
+	if SelectionMeansQuit(opt) {
+		return SelectionOption{Key: "-1", Label: "Quit"}
+	}
+	if SelectionMeansBack(opt) {
+		return SelectionOption{Key: "-2", Label: "Back"}
+	}
+	return opt
 }
 
 func findSelectionIndex(options []SelectionOption, previousKey string, previousLabel string, fallbackIndex int) int {
@@ -584,13 +706,31 @@ func RofiSelect(options []SelectionOption, isHomeMenu bool) (SelectionOption, er
 	return RofiSelectWithRefresh(options, isHomeMenu, nil)
 }
 
+// RofiSelectWithMessage shows a Rofi dmenu with an optional -mesg banner (for
+// release notes, error diagnosis, etc.) so callers do not need notify-send spam.
+func RofiSelectWithMessage(options []SelectionOption, isHomeMenu bool, prompt, message string) (SelectionOption, error) {
+	return rofiSelectInternal(options, isHomeMenu, nil, prompt, message)
+}
+
 func RofiSelectWithRefresh(options []SelectionOption, isHomeMenu bool, refreshConfig *SelectionRefreshConfig) (SelectionOption, error) {
+	return rofiSelectInternal(options, isHomeMenu, refreshConfig, "Select", "")
+}
+
+func rofiSelectInternal(options []SelectionOption, isHomeMenu bool, refreshConfig *SelectionRefreshConfig, prompt, message string) (SelectionOption, error) {
 	currentOptions := options
+	if strings.TrimSpace(prompt) == "" {
+		prompt = "Select"
+	}
 
 	for {
 		optionsString := buildRofiOptionsString(currentOptions, isHomeMenu)
 		configPath := filepath.Join(GetStoragePath(), "selectanime.rasi")
-		cmd := exec.Command("rofi", "-dmenu", "-theme", configPath, "-i", "-p", "Select")
+		// -markup: enable Pango in -mesg (and prompts where supported)
+		args := []string{"-dmenu", "-theme", configPath, "-i", "-markup", "-p", prompt}
+		if msg := strings.TrimSpace(message); msg != "" {
+			args = append(args, "-mesg", msg)
+		}
+		cmd := exec.Command("rofi", args...)
 		cmd.Stdin = strings.NewReader(optionsString)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
@@ -643,21 +783,31 @@ func RofiSelectWithRefresh(options []SelectionOption, isHomeMenu bool, refreshCo
 }
 
 func DynamicSelectFromSlice(options []SelectionOption) (SelectionOption, error) {
-	return dynamicSelectInternal(options, nil)
+	return dynamicSelectInternal(options, nil, false)
 }
 
 // DynamicSelect displays a simple selection prompt without extra features
 func DynamicSelect(options []SelectionOption) (SelectionOption, error) {
-	return dynamicSelectInternal(options, nil)
+	return dynamicSelectInternal(options, nil, false)
+}
+
+// DynamicSelectPreserveOrder is like DynamicSelect but keeps the caller's option order
+// (no alphabetical sort). Use for action menus where the first item is the primary action.
+func DynamicSelectPreserveOrder(options []SelectionOption) (SelectionOption, error) {
+	return dynamicSelectInternal(options, nil, true)
 }
 
 var promptSelect = DynamicSelect
 
+// promptSelectOrdered is used for action menus where option order matters.
+// Tests may replace this the same way as promptSelect.
+var promptSelectOrdered = DynamicSelectPreserveOrder
+
 func DynamicSelectWithRefresh(options []SelectionOption, refreshConfig *SelectionRefreshConfig) (SelectionOption, error) {
-	return dynamicSelectInternal(options, refreshConfig)
+	return dynamicSelectInternal(options, refreshConfig, false)
 }
 
-func dynamicSelectInternal(options []SelectionOption, refreshConfig *SelectionRefreshConfig) (SelectionOption, error) {
+func dynamicSelectInternal(options []SelectionOption, refreshConfig *SelectionRefreshConfig, preserveOrder bool) (SelectionOption, error) {
 	isHomeMenu := detectHomeMenu(options)
 
 	if isHomeMenu {
@@ -681,9 +831,10 @@ func dynamicSelectInternal(options []SelectionOption, refreshConfig *SelectionRe
 	}
 
 	model := &Model{
-		allOptions:   cleanOptions,
-		isHomeMenu:   isHomeMenu,
-		addNewOption: hasAddNew,
+		allOptions:    cleanOptions,
+		isHomeMenu:    isHomeMenu,
+		addNewOption:  hasAddNew,
+		preserveOrder: preserveOrder,
 	}
 	model.filterOptions()
 
@@ -730,10 +881,14 @@ func dynamicSelectInternal(options []SelectionOption, refreshConfig *SelectionRe
 		return SelectionOption{}, fmt.Errorf("unexpected model type")
 	}
 
-	if finalSelectionModel.selected < len(finalSelectionModel.filteredKeys) {
-		return finalSelectionModel.filteredKeys[finalSelectionModel.selected], nil
+	if finalSelectionModel.selected >= 0 && finalSelectionModel.selected < len(finalSelectionModel.filteredKeys) {
+		return NormalizeSelectionKey(finalSelectionModel.filteredKeys[finalSelectionModel.selected]), nil
 	}
-	return SelectionOption{}, nil
+	// Empty list / out of range — treat as cancel (Back for submenus, Quit on home).
+	if finalSelectionModel.isHomeMenu {
+		return SelectionOption{Key: "-1", Label: "Quit"}, nil
+	}
+	return SelectionOption{Key: "-2", Label: "Back"}, nil
 }
 
 func buildRofiOptionsString(options []SelectionOption, isHomeMenu bool) string {
@@ -762,21 +917,27 @@ func parseRofiSelection(err error, rawSelection string, options []SelectionOptio
 	}
 
 	selected := strings.TrimSpace(rawSelection)
-	switch selected {
-	case "":
+	// Strip accidental Pango/markup noise if a theme echoes it.
+	selected = strings.TrimSpace(ansiStrip.ReplaceAllString(selected, ""))
+	switch {
+	case selected == "":
 		if isHomeMenu {
 			return SelectionOption{Key: "-1", Label: "Quit"}, nil
 		}
 		return SelectionOption{Key: "-2", Label: "Back"}, nil
-	case "Back":
+	case strings.EqualFold(selected, "Back"), strings.EqualFold(selected, "Back to menu"), strings.EqualFold(selected, "Back to list"):
 		return SelectionOption{Label: "Back", Key: "-2"}, nil
-	case "Quit":
+	case strings.EqualFold(selected, "Quit"):
 		return SelectionOption{Label: "Quit", Key: "-1"}, nil
 	}
 
 	for _, opt := range options {
-		if opt.Label == selected {
-			return opt, nil
+		if opt.Label == selected || strings.EqualFold(opt.Label, selected) {
+			return NormalizeSelectionKey(opt), nil
+		}
+		// Match when emoji/spacing differs slightly (e.g. double-space after emoji).
+		if strings.EqualFold(strings.Join(strings.Fields(opt.Label), " "), strings.Join(strings.Fields(selected), " ")) {
+			return NormalizeSelectionKey(opt), nil
 		}
 	}
 

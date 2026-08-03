@@ -57,9 +57,12 @@ func (p *fakePlaybackProvider) GetEpisodeURL(config CurdConfig, id string, epNo 
 func withPromptSelect(t *testing.T, fn func([]SelectionOption) (SelectionOption, error)) {
 	t.Helper()
 	previous := promptSelect
+	previousOrdered := promptSelectOrdered
 	promptSelect = fn
+	promptSelectOrdered = fn
 	t.Cleanup(func() {
 		promptSelect = previous
+		promptSelectOrdered = previousOrdered
 	})
 }
 

@@ -10,6 +10,7 @@ require (
 	github.com/go-rod/rod v0.116.2
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/tr1xem/go-discordrpc v1.0.0
+	golang.org/x/term v0.29.0
 )
 
 require (

@@ -352,12 +352,12 @@ func LocalRemapAnimeProvider(databaseFile string, anilistID int, providerName, p
 	target := LocalFindAnime(animeList, anilistID, "")
 	if target == nil {
 		newAnime := Anime{
-			AnilistId:  anilistID,
-			ProviderId: providerID,
+			AnilistId:    anilistID,
+			ProviderId:   providerID,
 			ProviderName: providerName,
 			Ep: Episode{
-				Number: watchingEpisode,
-				Player: playingVideo{PlaybackTime: playbackTime},
+				Number:   watchingEpisode,
+				Player:   playingVideo{PlaybackTime: playbackTime},
 				Duration: animeDuration,
 			},
 			Title: AnimeTitle{
@@ -462,62 +462,69 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 	anime.Ep.Number = episodeNumber
 
 	for {
-		// Get episode link
-		resolvedLink, err := ResolveEpisodeURLForPlayback(*userCurdConfig, &anime, anime.Ep.Number)
-		if err != nil {
-			Log(fmt.Sprintf("Failed to get episode link: %v", err))
-			switch promptEpisodeLinkFailureRecovery(userCurdConfig) {
-			case "remap":
-				if RemapAnimeProviderOnEpisodeFailure(userCurdConfig, &anime, nil) {
-					continue
-				}
-			case "episode":
-				episodeNumber, promptErr := promptPositiveEpisodeNumber(userCurdConfig, "Enter the episode number")
-				if promptErr != nil {
-					Log(fmt.Sprintf("Invalid episode number: %v", promptErr))
-					CurdOut("Invalid episode number")
-					continue
-				}
-				anime.Ep.Number = episodeNumber
-				continue
-			default:
+		// Prefer prefetched next-episode links when available (same as tracked path).
+		if anime.Ep.NextEpisode.Number == anime.Ep.Number && len(anime.Ep.NextEpisode.Links) > 0 {
+			anime.Ep.Links = anime.Ep.NextEpisode.Links
+			anime.Ep.StreamReferrer = ""
+			anime.Ep.SubtitleURL = ""
+			if anime.Ep.NextEpisode.ProviderName != "" {
+				anime.ProviderName = anime.Ep.NextEpisode.ProviderName
+				anime.ProviderId = anime.Ep.NextEpisode.ProviderId
+			}
+			anime.Ep.NextEpisode = NextEpisode{}
+		} else {
+			// Preferred-first resolve; diagnosed recovery only after that fails.
+			resolvedLink, ok := resolveEpisodeLinksWithRecovery(userCurdConfig, &anime, nil, true)
+			if !ok {
 				ExitCurd(nil)
 			}
-			continue
+			anime.Ep.Links = resolvedLink.Links
+			applyStreamPlaybackHints(&anime, anime.Ep.Links, resolvedLink.LinkHints)
 		}
-		link := resolvedLink.Links
-		applyStreamPlaybackHints(&anime, link, resolvedLink.LinkHints)
 
-		if len(link) == 0 {
+		if len(anime.Ep.Links) == 0 {
 			ExitCurd(fmt.Errorf("No episode links found"))
 		}
 
-		CurdOut(fmt.Sprintf("%s - Episode %d", GetAnimeName(anime), anime.Ep.Number))
+		title := fmt.Sprintf("%s - Episode %d", GetAnimeName(anime), anime.Ep.Number)
+		CurdOut(title)
 
-		// Start video playback
-		mpvSocketPath, err := StartVideo(PrioritizeLink(link), []string{}, fmt.Sprintf("%s - Episode %d", GetAnimeName(anime), anime.Ep.Number), &anime)
-		if err != nil {
-			Log("Failed to start mpv")
-			exitWithRestore(1)
-		}
+		// Prefetch next episode in preferred mode only (no audio-mode prompts in background).
+		go prefetchNextUntrackedEpisode(userCurdConfig, &anime)
 
+		// Start with provider fallback when playback never begins (shared with tracked path).
+		mpvSocketPath := StartVideoWithProviderFallback(userCurdConfig, &anime, title)
 		anime.Ep.Player.SocketPath = mpvSocketPath
 		anime.Ep.Started = false
+		anime.Ep.IsCompleted = false
+		anime.Ep.Player.PlaybackTime = 0
+		anime.Ep.Duration = 0
+		anime.Ep.SkipTimes = SkipTimes{}
 
 		Log(fmt.Sprintf("Started mpv with socket path: %s", anime.Ep.Player.SocketPath))
 
-		// Get video duration
+		// Android intent path: external player, no IPC monitoring.
+		if mpvSocketPath == "android-intent" {
+			CurdOut(fmt.Sprintf("\nOpened external player for Episode %d.", anime.Ep.Number))
+			CurdOut("Press Enter when you have finished watching...")
+			var input string
+			fmt.Scanln(&input)
+			anime.Ep.Number++
+			anime.Ep.Started = false
+			continue
+		}
+
+		// Get video duration once playback has started.
 		go func() {
 			for {
 				if anime.Ep.Started {
 					if anime.Ep.Duration == 0 {
-						// Get video duration
 						durationPos, err := MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "duration"})
 						if err != nil {
 							Log("Error getting video duration: " + err.Error())
 						} else if durationPos != nil {
 							if duration, ok := durationPos.(float64); ok {
-								anime.Ep.Duration = int(duration + 0.5) // Round to nearest integer
+								anime.Ep.Duration = int(duration + 0.5)
 								Log(fmt.Sprintf("Video duration: %d seconds", anime.Ep.Duration))
 							} else {
 								Log("Error: duration is not a float64")
@@ -530,41 +537,59 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 			}
 		}()
 
-		// Listen for video started
+		// Monitor playback: position, speed save, OP/ED skip (when times are available).
 		for {
 			timePos, err := MPVSendCommand(anime.Ep.Player.SocketPath, []interface{}{"get_property", "time-pos"})
 			if err != nil {
 				Log("Error getting playback time: " + err.Error())
 
-				// Check if the error is due to invalid JSON
-				// User closed the video
 				if anime.Ep.Started {
 					percentageWatched := PercentageWatched(anime.Ep.Player.PlaybackTime, anime.Ep.Duration)
-					// Episode is completed
-					Log(fmt.Sprint(percentageWatched))
-					Log(fmt.Sprint(anime.Ep.Player.PlaybackTime))
-					Log(fmt.Sprint(anime.Ep.Duration))
-					Log(fmt.Sprint(userCurdConfig.PercentageToMarkComplete))
-					if int(percentageWatched) >= userCurdConfig.PercentageToMarkComplete {
+					action := ClassifyPlaybackLoss(
+						anime.Ep.Player.SocketPath,
+						anime.Ep.Started,
+						percentageWatched,
+						userCurdConfig.PercentageToMarkComplete,
+					)
+					Log(fmt.Sprintf("untracked playback loss: pct=%.1f action=%d", percentageWatched, action))
+					switch action {
+					case PlaybackLossWait:
+						time.Sleep(200 * time.Millisecond)
+						continue
+					case PlaybackLossComplete:
 						anime.Ep.Number++
 						anime.Ep.Started = false
 						Log("Completed episode, starting next.")
 						anime.Ep.IsCompleted = true
-						// Exit the skip loop
-						break
-					} else if fmt.Sprintf("%v", err) == "invalid character '{' after top-level value" { // Episode is not completed
-						Log("Received invalid JSON response, continuing...")
-					} else {
+						// Break the playback monitor loop (not just the switch).
+						goto nextUntrackedEpisode
+					case PlaybackLossExit:
 						Log("Episode is not completed, exiting")
 						ExitCurd(nil)
 					}
+				} else if isMPVConnectionGoneError(err) {
+					// Should be rare after StartVideoWithProviderFallback, but exit cleanly.
+					Log("MPV exited before untracked playback was marked started")
+					ExitCurd(nil)
 				}
 			}
 
-			// Convert timePos to integer
 			if timePos != nil {
 				if !anime.Ep.Started {
 					anime.Ep.Started = true
+					if userCurdConfig.SaveMpvSpeed && anime.Ep.Player.Speed > 0 {
+						speedCmd := []interface{}{"set_property", "speed", anime.Ep.Player.Speed}
+						if _, speedErr := MPVSendCommand(anime.Ep.Player.SocketPath, speedCmd); speedErr != nil {
+							Log("Error setting playback speed: " + speedErr.Error())
+						}
+					}
+					// Only push chapters when AniSkip-style times are actually present.
+					if anime.Ep.SkipTimes.Op.Start != anime.Ep.SkipTimes.Op.End ||
+						anime.Ep.SkipTimes.Ed.Start != anime.Ep.SkipTimes.Ed.End {
+						if skipErr := SendSkipTimesToMPV(&anime); skipErr != nil {
+							Log("Error sending skip times to MPV: " + skipErr.Error())
+						}
+					}
 				}
 
 				animePosition, ok := timePos.(float64)
@@ -573,11 +598,55 @@ func WatchUntracked(userCurdConfig *CurdConfig) {
 					continue
 				}
 
-				anime.Ep.Player.PlaybackTime = int(animePosition + 0.5) // Round to nearest integer
+				anime.Ep.Player.PlaybackTime = int(animePosition + 0.5)
+
+				// Skip OP/ED when skip times are known (non-tracking; needs MalId for AniSkip).
+				if userCurdConfig.SkipOp {
+					if anime.Ep.Player.PlaybackTime > anime.Ep.SkipTimes.Op.Start &&
+						anime.Ep.Player.PlaybackTime < anime.Ep.SkipTimes.Op.Start+2 &&
+						anime.Ep.SkipTimes.Op.Start != anime.Ep.SkipTimes.Op.End {
+						SeekMPV(anime.Ep.Player.SocketPath, anime.Ep.SkipTimes.Op.End)
+					}
+				}
+				if userCurdConfig.SkipEd {
+					if anime.Ep.Player.PlaybackTime > anime.Ep.SkipTimes.Ed.Start &&
+						anime.Ep.Player.PlaybackTime < anime.Ep.SkipTimes.Ed.Start+2 &&
+						anime.Ep.SkipTimes.Ed.Start != anime.Ep.SkipTimes.Ed.End {
+						SeekMPV(anime.Ep.Player.SocketPath, anime.Ep.SkipTimes.Ed.End)
+					}
+				}
+
+				if speed, speedErr := GetMPVPlaybackSpeed(anime.Ep.Player.SocketPath); speedErr == nil {
+					anime.Ep.Player.Speed = speed
+				}
 			}
 			time.Sleep(1 * time.Second)
-
 		}
+	nextUntrackedEpisode:
 	}
 
+}
+
+// prefetchNextUntrackedEpisode resolves the next episode in preferred SubOrDub only
+// (no audio-mode prompts) so the next loop iteration can start faster.
+func prefetchNextUntrackedEpisode(userCurdConfig *CurdConfig, anime *Anime) {
+	if userCurdConfig == nil || anime == nil {
+		return
+	}
+	nextEpNum := anime.Ep.Number + 1
+	nextEpisode := *anime
+	nextEpisode.ProviderId = anime.ProviderId
+	nextEpisode.ProviderName = anime.ProviderName
+	nextResult, err := ResolveEpisodeURL(*userCurdConfig, &nextEpisode, nextEpNum)
+	if err != nil {
+		Log(fmt.Sprintf("Error getting next untracked episode link for ep %d: %v", nextEpNum, err))
+		return
+	}
+	anime.Ep.NextEpisode = NextEpisode{
+		Number:       nextEpNum,
+		Links:        nextResult.Links,
+		ProviderName: nextResult.ProviderName,
+		ProviderId:   nextResult.ProviderID,
+		Mode:         nextResult.Mode,
+	}
 }

@@ -114,6 +114,137 @@ func TestMigrateOnVersionUpgradeWritesVersionAndUpdatesProvider(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDoesNotDumpAllDefaultsIntoSparseFile(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "curd.conf")
+	storagePath := filepath.Join(tempDir, "share")
+	initial := "StoragePath=" + storagePath + "\n" +
+		"AddMissingOptions=true\n" +
+		"Provider=stacked\n" +
+		"Player=mpv\n"
+	if err := os.WriteFile(configPath, []byte(initial), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	// In-memory defaults still apply.
+	if config.VimKeys {
+		t.Fatal("VimKeys default should be false in memory")
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	text := string(after)
+	// Sparse file must not gain every historical default on a normal load.
+	if strings.Contains(text, "VimKeys=") {
+		t.Fatalf("LoadConfig must not append versioned options without an upgrade:\n%s", text)
+	}
+	if strings.Contains(text, "SkipOp=") {
+		t.Fatalf("LoadConfig must not dump baseline defaults into sparse configs:\n%s", text)
+	}
+}
+
+func TestMigrateOnVersionUpgradeInjectsOnlyOptionsForCrossedVersions(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "curd.conf")
+	storagePath := filepath.Join(tempDir, "share")
+	initial := "StoragePath=" + storagePath + "\n" +
+		"AddMissingOptions=true\n" +
+		"Provider=stacked\n" +
+		"Player=mpv\n"
+	if err := os.WriteFile(configPath, []byte(initial), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.MkdirAll(storagePath, 0755); err != nil {
+		t.Fatalf("mkdir storage: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(storagePath, "curd_version"), []byte("2.0.2\n"), 0644); err != nil {
+		t.Fatalf("write version: %v", err)
+	}
+
+	config := PopulateConfig(map[string]string{
+		"StoragePath":       storagePath,
+		"AddMissingOptions": "true",
+		"Provider":          "stacked",
+		"Player":            "mpv",
+	})
+
+	updated, err := MigrateOnVersionUpgrade(configPath, &config, "2.0.3")
+	if err != nil {
+		t.Fatalf("MigrateOnVersionUpgrade: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected config file to gain 2.0.3 options on upgrade")
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after migrate: %v", err)
+	}
+	text := string(after)
+	if !strings.Contains(text, "VimKeys=false") {
+		t.Fatalf("expected VimKeys=false for 2.0.3 upgrade:\n%s", text)
+	}
+	if !strings.Contains(text, "MpvPlaybackStartTimeout=20") {
+		t.Fatalf("expected MpvPlaybackStartTimeout for 2.0.3 upgrade:\n%s", text)
+	}
+	// Must NOT dump unrelated baseline keys.
+	if strings.Contains(text, "SkipOp=") || strings.Contains(text, "DiscordPresence=") {
+		t.Fatalf("upgrade must not inject unregistered baseline options:\n%s", text)
+	}
+
+	updated, err = MigrateOnVersionUpgrade(configPath, &config, "2.0.3")
+	if err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	if updated {
+		t.Fatal("same version must not re-inject options")
+	}
+}
+
+func TestInjectConfigOptionsSinceOnlyCrossedVersions(t *testing.T) {
+	m := map[string]string{"Player": "mpv"}
+	// Already on 2.0.3 — nothing new.
+	if added := injectConfigOptionsSince(m, "2.0.3", "2.0.3"); len(added) != 0 {
+		t.Fatalf("same version should inject nothing, got %v", added)
+	}
+	// 2.0.2 → 2.0.3 gets VimKeys + timeout only.
+	added := injectConfigOptionsSince(m, "2.0.2", "2.0.3")
+	if len(added) != 2 {
+		t.Fatalf("expected 2 options for 2.0.2→2.0.3, got %v", added)
+	}
+	want := map[string]bool{"VimKeys": true, "MpvPlaybackStartTimeout": true}
+	for _, key := range added {
+		if !want[key] {
+			t.Fatalf("unexpected injected key %q in %v", key, added)
+		}
+	}
+	// Already present keys are skipped.
+	if second := injectConfigOptionsSince(m, "2.0.2", "2.0.3"); len(second) != 0 {
+		t.Fatalf("second inject should be empty, got %v", second)
+	}
+}
+
+func TestCompareVersionsOrdering(t *testing.T) {
+	if !versionLess("2.0.2", "2.0.3") {
+		t.Fatal("2.0.2 should be < 2.0.3")
+	}
+	if !versionLess("", "2.0.3") {
+		t.Fatal("empty stored version should be older than a release")
+	}
+	if versionLess("2.0.3", "2.0.3") {
+		t.Fatal("equal versions should not be less")
+	}
+	if !versionLessOrEqual("2.0.3", "2.0.3") {
+		t.Fatal("equal versions should be <= ")
+	}
+}
+
 func TestConfiguredProviderNamesUsesStackedByDefault(t *testing.T) {
 	withAllProvidersEnabledForTest(t)
 	got := ConfiguredProviderNames(&CurdConfig{})

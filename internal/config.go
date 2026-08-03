@@ -40,6 +40,7 @@ type AnilistToken struct {
 type CurdConfig struct {
 	Player                     string   `config:"Player"`
 	MpvArgs                    []string `config:"MpvArgs"`
+	MpvPlaybackStartTimeout    int      `config:"MpvPlaybackStartTimeout"`
 	SubsLanguage               string   `config:"SubsLanguage"`
 	SubOrDub                   string   `config:"SubOrDub"`
 	SubStyle                   string   `config:"SubStyle"`
@@ -61,6 +62,9 @@ type CurdConfig struct {
 	AlternateScreen            bool     `config:"AlternateScreen"`
 	DiscordPresence            bool     `config:"DiscordPresence"`
 	DiscordClientId            string   `config:"DiscordClientId"`
+	VimKeys                    bool     `config:"VimKeys"`
+	CheckUpdates               bool     `config:"CheckUpdates"`
+	MpvEpisodePlaylist         bool     `config:"MpvEpisodePlaylist"`
 	Provider                   string   `config:"Provider"`
 	DisabledProviders          string   `config:"DisabledProviders"`
 	ManualProviderSearch       bool     `config:"ManualProviderSearch"`
@@ -71,6 +75,17 @@ type CurdConfig struct {
 	MyAnimeListClientSecret    string   `config:"MyAnimeListClientSecret"`
 	MyAnimeListImported        bool     `config:"MyAnimeListImported"`
 	MyAnimeListImportDismissed bool     `config:"MyAnimeListImportDismissed"`
+}
+
+const DefaultMpvPlaybackStartTimeout = 20
+const maxMpvPlaybackStartTimeout = 600
+
+func MpvPlaybackStartTimeoutDuration(config *CurdConfig) time.Duration {
+	seconds := DefaultMpvPlaybackStartTimeout
+	if config != nil && config.MpvPlaybackStartTimeout > 0 {
+		seconds = config.MpvPlaybackStartTimeout
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func GetStoragePath() string {
@@ -85,6 +100,7 @@ func defaultConfigMap() map[string]string {
 	return map[string]string{
 		"Player":                     "mpv",
 		"MpvArgs":                    "[]",
+		"MpvPlaybackStartTimeout":    "20",
 		"StoragePath":                "$HOME/.local/share/curd",
 		"AnimeNameLanguage":          "english",
 		"SubsLanguage":               "english",
@@ -105,9 +121,12 @@ func defaultConfigMap() map[string]string {
 		"AlternateScreen":            "true",
 		"DiscordPresence":            "true",
 		"DiscordClientId":            "1287457464148820089",
+		"VimKeys":                    "false",
+		"CheckUpdates":               "true",
+		"MpvEpisodePlaylist":         "true",
 		"Provider":                   "stacked",
 		"DisabledProviders":          "[]",
-		"ManualProviderSearch":     "false",
+		"ManualProviderSearch":       "false",
 		"TrackingLocal":              "true",
 		"TrackingRemote":             "anilist",
 		"TrackingConfigured":         "false",
@@ -116,6 +135,17 @@ func defaultConfigMap() map[string]string {
 		"MyAnimeListImported":        "false",
 		"MyAnimeListImportDismissed": "false",
 	}
+}
+
+// VimKeysEnabled reports whether selection menus should use vim-style motions.
+func VimKeysEnabled(config *CurdConfig) bool {
+	if config != nil {
+		return config.VimKeys
+	}
+	if globalConfig != nil {
+		return globalConfig.VimKeys
+	}
+	return false
 }
 
 var globalConfig *CurdConfig
@@ -223,44 +253,54 @@ func LoadConfig(configPath string) (CurdConfig, error) {
 	_, hadTrackingConfigured := configMap["TrackingConfigured"]
 	legacyConfig := !createdConfig && !hadTrackingRemote && !hadTrackingConfigured
 
-	// Add missing fields to the config map
-	updated := false
-	defaultConfigMap := defaultConfigMap()
-	for key, defaultValue := range defaultConfigMap {
-		if _, exists := configMap[key]; !exists {
-			configMap[key] = defaultValue
-			updated = true
+	// fileMap = keys actually present on disk.
+	// workMap = file keys + in-memory defaults for PopulateConfig.
+	fileMap := configMap
+	workMap := make(map[string]string, len(fileMap)+len(defaultConfigMap()))
+	for key, value := range fileMap {
+		workMap[key] = value
+	}
+	for key, defaultValue := range defaultConfigMap() {
+		if _, exists := workMap[key]; !exists {
+			workMap[key] = defaultValue
 		}
 	}
+
+	// One-time legacy tracking migration: only touch tracking keys on disk.
+	updated := false
 	if legacyConfig {
-		configMap["TrackingLocal"] = "true"
-		configMap["TrackingRemote"] = TrackingRemoteAniList
-		configMap["TrackingConfigured"] = "true"
+		fileMap["TrackingLocal"] = "true"
+		fileMap["TrackingRemote"] = TrackingRemoteAniList
+		fileMap["TrackingConfigured"] = "true"
+		workMap["TrackingLocal"] = "true"
+		workMap["TrackingRemote"] = TrackingRemoteAniList
+		workMap["TrackingConfigured"] = "true"
 		updated = true
 	}
 
-	if providerValue, exists := configMap["Provider"]; exists {
+	if providerValue, exists := fileMap["Provider"]; exists {
 		normalizedProviderValue := canonicalProviderConfigValue(providerValue)
 		if normalizedProviderValue != providerValue {
-			configMap["Provider"] = normalizedProviderValue
+			fileMap["Provider"] = normalizedProviderValue
+			workMap["Provider"] = normalizedProviderValue
 			updated = true
 		}
 	}
 
-	// Write updated config back to file only if AddMissingOptions is true
+	// New config keys are NOT bulk-appended here. Only MigrateOnVersionUpgrade
+	// injects options registered in configOptionsIntroducedInVersion() for the
+	// versions the user actually crossed — so sparse configs never get every
+	// historical default dumped in on a normal launch.
+
+	// Persist legacy tracking / provider-token normalize (rewrite only those cases).
 	if addMissing && updated {
-		if err := SaveConfigToFile(configPath, configMap); err != nil {
+		if err := SaveConfigToFile(configPath, fileMap); err != nil {
 			return CurdConfig{}, fmt.Errorf("error saving updated config file: %v", err)
 		}
 	}
 
-	// Parse string arrays
-	if mpvArgs, exists := configMap["MpvArgs"]; exists {
-		configMap["MpvArgs"] = mpvArgs
-	}
-
-	// Populate the CurdConfig struct from the config map
-	config := PopulateConfig(configMap)
+	// Populate the CurdConfig struct from the complete (in-memory) work map
+	config := PopulateConfig(workMap)
 	normalizeTrackingConfig(&config)
 
 	return config, nil
@@ -677,6 +717,12 @@ func PopulateConfig(configMap map[string]string) CurdConfig {
 		config.PercentageToMarkComplete = 100
 	}
 
+	if config.MpvPlaybackStartTimeout <= 0 {
+		config.MpvPlaybackStartTimeout = DefaultMpvPlaybackStartTimeout
+	} else if config.MpvPlaybackStartTimeout > maxMpvPlaybackStartTimeout {
+		config.MpvPlaybackStartTimeout = maxMpvPlaybackStartTimeout
+	}
+
 	return config
 }
 
@@ -720,13 +766,13 @@ func getOrderedCategories(userCurdConfig *CurdConfig) []SelectionOption {
 		"UPDATE":         "Update (Episode, Status, Score)",
 		"REMAP_PROVIDER": "Remap Provider",
 		"CONTINUE_LAST":  "Continue Last Session",
-		"PLANNING":      "Plan to Watch",
-		"COMPLETED":     "Completed",
-		"PAUSED":        "Paused",
-		"DROPPED":       "Dropped",
-		"REWATCHING":    "Rewatching",
-		"TRACKER":       "Change Tracker",
-		"PROVIDER":      "Change Provider",
+		"PLANNING":       "Plan to Watch",
+		"COMPLETED":      "Completed",
+		"PAUSED":         "Paused",
+		"DROPPED":        "Dropped",
+		"REWATCHING":     "Rewatching",
+		"TRACKER":        "Change Tracker",
+		"PROVIDER":       "Change Provider",
 	}
 
 	// Create ordered list to store final result
