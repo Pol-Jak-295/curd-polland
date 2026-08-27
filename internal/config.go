@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	// "io"
 	"net/http"
@@ -75,10 +76,13 @@ type CurdConfig struct {
 	MyAnimeListClientSecret    string   `config:"MyAnimeListClientSecret"`
 	MyAnimeListImported        bool     `config:"MyAnimeListImported"`
 	MyAnimeListImportDismissed bool     `config:"MyAnimeListImportDismissed"`
+	ShowNewEpisodes            bool     `config:"ShowNewEpisodes"`
 }
 
-const DefaultMpvPlaybackStartTimeout = 20
-const maxMpvPlaybackStartTimeout = 600
+const (
+	DefaultMpvPlaybackStartTimeout = 20
+	maxMpvPlaybackStartTimeout     = 600
+)
 
 func MpvPlaybackStartTimeoutDuration(config *CurdConfig) time.Duration {
 	seconds := DefaultMpvPlaybackStartTimeout
@@ -134,6 +138,7 @@ func defaultConfigMap() map[string]string {
 		"MyAnimeListClientSecret":    "",
 		"MyAnimeListImported":        "false",
 		"MyAnimeListImportDismissed": "false",
+		"ShowNewEpisodes":            "true",
 	}
 }
 
@@ -313,7 +318,7 @@ func createDefaultConfig(path string) error {
 
 	// Ensure the directory exists
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("error creating directory: %v", err)
 	}
 
@@ -534,7 +539,7 @@ func loadToken(tokenPath string) (*AnilistToken, error) {
 // saveToken saves the token to the token file
 func saveToken(tokenPath string, token *AnilistToken) error {
 	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(tokenPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -543,7 +548,7 @@ func saveToken(tokenPath string, token *AnilistToken) error {
 		return fmt.Errorf("failed to marshal token: %w", err)
 	}
 
-	return os.WriteFile(tokenPath, data, 0600)
+	return os.WriteFile(tokenPath, data, 0o600)
 }
 
 // isTokenValid checks if the token is still valid
@@ -584,7 +589,6 @@ func ChangeToken(config *CurdConfig, user *User) {
 	// Try browser-based OAuth first
 	fmt.Println("Starting browser-based authentication...")
 	user.Token, err = authenticateWithBrowser(tokenPath)
-
 	if err != nil {
 		Log("Browser authentication failed: " + err.Error())
 		fmt.Printf("Browser authentication failed: %v\n", err)
@@ -659,9 +663,15 @@ func SaveConfigToFile(path string, configMap map[string]string) error {
 	}
 	defer file.Close()
 
+	keys := make([]string, 0, len(configMap))
+	for key := range configMap {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
 	writer := bufio.NewWriter(file)
-	for key, value := range configMap {
-		line := fmt.Sprintf("%s=%s\n", key, value)
+	for _, key := range keys {
+		line := fmt.Sprintf("%s=%s\n", key, configMap[key])
 		if _, err := writer.WriteString(line); err != nil {
 			return err
 		}

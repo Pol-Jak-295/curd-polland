@@ -15,6 +15,7 @@
 
 /*****----- Global Properties -----*****/
 * {
+<<<<<<< HEAD
     font:                        "Maple Mono NF CN 14";
     background-color:            transparent;
     background:                  #09164C88;
