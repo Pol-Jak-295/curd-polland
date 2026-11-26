@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakePlaybackProvider struct {
@@ -20,6 +22,9 @@ type fakePlaybackProvider struct {
 	episodeErrByMode  map[string]error
 	modes             []string
 	episodeModes      []string
+	// linkRotator, when set, returns the links for the n-th stream
+	// resolution instead of the static linksByMode map.
+	linkRotator func(call int, mode string) ([]string, error)
 }
 
 func (p *fakePlaybackProvider) Name() string {
@@ -48,6 +53,9 @@ func (p *fakePlaybackProvider) EpisodesList(showID, mode string) ([]string, erro
 func (p *fakePlaybackProvider) GetEpisodeURL(config CurdConfig, id string, epNo int) ([]string, error) {
 	mode := normalizeTranslationType(config.SubOrDub)
 	p.modes = append(p.modes, mode)
+	if p.linkRotator != nil {
+		return p.linkRotator(len(p.modes), mode)
+	}
 	if err := p.errByMode[mode]; err != nil {
 		return nil, err
 	}
@@ -238,6 +246,9 @@ func TestGetEpisodeURLForPlaybackRequiresExplicitFallbackApproval(t *testing.T) 
 		return SelectionOption{Key: "play"}, nil
 	})
 
+	previousMaxAge := fallbackRefetchMaxAge
+	fallbackRefetchMaxAge = 0
+	t.Cleanup(func() { fallbackRefetchMaxAge = previousMaxAge })
 	links, mode, err := GetEpisodeURLForPlayback(CurdConfig{SubOrDub: "sub"}, "anime-id", 1)
 	if err != nil {
 		t.Fatalf("expected accepted fallback to succeed: %v", err)
@@ -245,8 +256,69 @@ func TestGetEpisodeURLForPlaybackRequiresExplicitFallbackApproval(t *testing.T) 
 	if mode != "dub" || len(links) != 1 || links[0] != "dub-url" {
 		t.Fatalf("unexpected fallback result: mode=%q links=%v", mode, links)
 	}
+	// Preferred lookup, fallback probe, then a fresh fallback resolution on
+	// accept: signed URLs may expire while the prompt is on screen.
+	if got := strings.Join(provider.modes, ","); got != "sub,dub,dub" {
+		t.Fatalf("expected preferred, probe, then fresh lookup, got %s", got)
+	}
+}
+
+func TestGetEpisodeURLForPlaybackRefreshesLinksOnAccept(t *testing.T) {
+	provider := &fakePlaybackProvider{
+		linkRotator: func(call int, mode string) ([]string, error) {
+			if mode == "sub" {
+				return nil, errors.New("no sub streams")
+			}
+			return []string{fmt.Sprintf("dub-url-%d", call)}, nil
+		},
+	}
+	withProvider(t, provider)
+	withPromptSelect(t, func(options []SelectionOption) (SelectionOption, error) {
+		return SelectionOption{Key: "play"}, nil
+	})
+
+	previousMaxAge := fallbackRefetchMaxAge
+	fallbackRefetchMaxAge = 0
+	t.Cleanup(func() { fallbackRefetchMaxAge = previousMaxAge })
+	links, mode, err := GetEpisodeURLForPlayback(CurdConfig{SubOrDub: "sub"}, "anime-id", 1)
+	if err != nil {
+		t.Fatalf("expected accepted fallback to succeed: %v", err)
+	}
+	// Calls: 1=sub (fails), 2=dub probe (dub-url-2), accept, 3=dub fresh.
+	if got := strings.Join(provider.modes, ","); got != "sub,dub,dub" {
+		t.Fatalf("expected probe + fresh resolution, got %s", got)
+	}
+	if mode != "dub" || len(links) != 1 || links[0] != "dub-url-3" {
+		t.Fatalf("expected freshly resolved links, got mode=%q links=%v", mode, links)
+	}
+}
+
+func TestGetEpisodeURLForPlaybackSkipsRefreshWhenFresh(t *testing.T) {
+	provider := &fakePlaybackProvider{
+		linkRotator: func(call int, mode string) ([]string, error) {
+			if mode == "sub" {
+				return nil, errors.New("no sub streams")
+			}
+			return []string{fmt.Sprintf("dub-url-%d", call)}, nil
+		},
+	}
+	withProvider(t, provider)
+	withPromptSelect(t, func(options []SelectionOption) (SelectionOption, error) {
+		return SelectionOption{Key: "play"}, nil
+	})
+
+	previousMaxAge := fallbackRefetchMaxAge
+	fallbackRefetchMaxAge = time.Hour
+	t.Cleanup(func() { fallbackRefetchMaxAge = previousMaxAge })
+	links, mode, err := GetEpisodeURLForPlayback(CurdConfig{SubOrDub: "sub"}, "anime-id", 1)
+	if err != nil {
+		t.Fatalf("expected accepted fallback to succeed: %v", err)
+	}
 	if got := strings.Join(provider.modes, ","); got != "sub,dub" {
-		t.Fatalf("expected preferred then fallback lookup, got %s", got)
+		t.Fatalf("expected probe only, no re-resolution, got %s", got)
+	}
+	if mode != "dub" || len(links) != 1 || links[0] != "dub-url-2" {
+		t.Fatalf("expected probed links, got mode=%q links=%v", mode, links)
 	}
 }
 
@@ -338,7 +410,9 @@ func TestWriteTrackingBackupCreatesSnapshot(t *testing.T) {
 	}
 }
 
-func TestConfirmProviderMatchRequiresUserApproval(t *testing.T) {
+func TestProviderApprovalPathRequiresUserChoice(t *testing.T) {
+	// confirmProviderMatch is the explicit human approval gate: heuristic
+	// candidates are proposed, never silently adopted.
 	withPromptSelect(t, func(options []SelectionOption) (SelectionOption, error) {
 		if options[0].Key != "use" || options[1].Key != "manual" {
 			t.Fatalf("unexpected provider confirmation options: %+v", options)
@@ -348,6 +422,14 @@ func TestConfirmProviderMatchRequiresUserApproval(t *testing.T) {
 
 	if confirmProviderMatch(SelectionOption{Label: "Example"}, "title") {
 		t.Fatalf("manual selection should reject guessed provider match")
+	}
+
+	withPromptSelect(t, func(options []SelectionOption) (SelectionOption, error) {
+		return SelectionOption{Key: "use"}, nil
+	})
+
+	if !confirmProviderMatch(SelectionOption{Label: "Example"}, "title") {
+		t.Fatalf("explicit user approval should accept the proposed match")
 	}
 }
 

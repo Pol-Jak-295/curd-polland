@@ -3,8 +3,13 @@ package loadproviders
 
 import (
 	_ "github.com/wraient/curd/internal/providers/allanime"
+	_ "github.com/wraient/curd/internal/providers/anikoto"
+	_ "github.com/wraient/curd/internal/providers/anilight"
 	_ "github.com/wraient/curd/internal/providers/animepahe"
+	_ "github.com/wraient/curd/internal/providers/animex"
 	_ "github.com/wraient/curd/internal/providers/anineko"
+	_ "github.com/wraient/curd/internal/providers/anipm"
 	_ "github.com/wraient/curd/internal/providers/anipub"
+	_ "github.com/wraient/curd/internal/providers/aniwaves"
 	_ "github.com/wraient/curd/internal/providers/senshi"
 )

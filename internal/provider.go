@@ -2,12 +2,65 @@ package internal
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/wraient/curd/internal/providers"
+	"github.com/wraient/curd/internal/providers/allanime"
+	"github.com/wraient/curd/internal/providers/anikoto"
+	"github.com/wraient/curd/internal/providers/anilight"
 	"github.com/wraient/curd/internal/providers/animepahe"
+	"github.com/wraient/curd/internal/providers/animex"
+	"github.com/wraient/curd/internal/providers/anineko"
+	"github.com/wraient/curd/internal/providers/anipm"
+	"github.com/wraient/curd/internal/providers/anipub"
+	"github.com/wraient/curd/internal/providers/aniwaves"
+	"github.com/wraient/curd/internal/providers/senshi"
 )
+
+// nonEmpty returns its non-blank trimmed arguments.
+func nonEmpty(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+var (
+	anilistThumbnailRE = regexp.MustCompile(`anilistcdn/media/anime/cover/(?:large|medium)/(?:bx)?(\d+)`)
+	senshiPosterIDRE   = regexp.MustCompile(`/posters/(\d+)(?:\.webp)?`)
+	trailingYearRE     = regexp.MustCompile(`\s+\d{4}$`)
+)
+
+// stripTrailingYear removes a catalog year suffix providers append to
+// display titles ("Hunter x Hunter (2011)" normalizes to a trailing year
+// token). It runs on already-normalized titles, so only a bare trailing
+// 4-digit token is stripped. The stripped form is only ever an *additional*
+// exact-match candidate alongside the full title.
+func stripTrailingYear(normalizedTitle string) string {
+	return strings.TrimSpace(trailingYearRE.ReplaceAllString(normalizedTitle, ""))
+}
+
+// thumbnailExactAnilistMatch reports whether a thumbnail URL embeds exactly
+// the given AniList ID (AniList CDN URLs carry it in the path).
+func thumbnailExactAnilistMatch(thumbnail string, anilistID int) bool {
+	matches := anilistThumbnailRE.FindStringSubmatch(thumbnail)
+	return len(matches) > 1 && matches[1] == strconv.Itoa(anilistID)
+}
+
+// senshiPosterMatchesMalID reports whether a senshi poster URL embeds exactly
+// the given MAL ID (/posters/<malid>.webp).
+func senshiPosterMatchesMalID(thumbnail string, malID int) bool {
+	matches := senshiPosterIDRE.FindStringSubmatch(thumbnail)
+	return len(matches) > 1 && matches[1] == strconv.Itoa(malID)
+}
 
 // Provider interface defines methods for an anime provider.
 type Provider interface {
@@ -27,12 +80,54 @@ type ProviderEpisodeResult struct {
 	ProviderName string
 	ProviderID   string
 	Mode         string
+	// ResolvedAt records when the links were produced. Signed stream URLs
+	// expire within minutes, so fallback-accept paths only hand mpv links
+	// fresher than fallbackRefetchMaxAge and re-resolve older ones.
+	ResolvedAt time.Time
+}
+
+// fallbackRefetchMaxAge bounds how old probed fallback links may be when
+// the user accepts the fallback prompt. Younger probes are handed to mpv
+// as-is; older ones are re-resolved first because short-TTL signed URLs
+// may already be dead. mpv-start failure retry remains the backstop.
+var fallbackRefetchMaxAge = 60 * time.Second
+
+// fallbackLinksFresh reports whether probed links were resolved recently
+// enough to hand to mpv without another lookup.
+func fallbackLinksFresh(resolvedAt time.Time) bool {
+	if resolvedAt.IsZero() {
+		return false
+	}
+	return time.Since(resolvedAt) <= fallbackRefetchMaxAge
 }
 
 const providerIDSeparator = "::"
 
-// Global variable to keep the current provider
-var CurrentProvider Provider
+// providerSearchTimeout bounds a single provider search inside the stacked
+// search so one slow provider cannot stall the whole lookup.
+const providerSearchTimeout = 15 * time.Second
+
+// providerResolveTimeout bounds one stacked episode-resolve pass so a hung
+// provider cannot stall playback forever; the old sequential walk had no
+// bound at all. On expiry the best completed outcome wins (first stack-order
+// success, else the completed failures plus a timeout note).
+var providerResolveTimeout = 30 * time.Second
+
+// Global variable to keep the current provider. Guarded by
+// currentProviderMu: the stacked resolve fan-out reads it from several
+// goroutines while config changes reset it.
+var (
+	CurrentProvider   Provider
+	currentProviderMu sync.Mutex
+)
+
+// resetCurrentProvider drops the cached default provider so the next lookup
+// re-reads the (possibly just changed) configuration.
+func resetCurrentProvider() {
+	currentProviderMu.Lock()
+	CurrentProvider = nil
+	currentProviderMu.Unlock()
+}
 
 func normalizeProviderName(providerName string) string {
 	return providers.NormalizeName(providerName)
@@ -180,6 +275,11 @@ func animepaheDeclinedInConfig(config *CurdConfig) bool {
 	return declined
 }
 
+func providerNoPrefetch(providerName string) bool {
+	meta, ok := providers.MetaFor(providerName)
+	return ok && meta.NoPrefetch
+}
+
 func ProviderStackContains(config *CurdConfig, providerName string) bool {
 	providerName = normalizeProviderName(providerName)
 	if providerName == "" {
@@ -206,6 +306,8 @@ func ProviderByName(providerName string) (Provider, error) {
 }
 
 func GetProvider() Provider {
+	currentProviderMu.Lock()
+	defer currentProviderMu.Unlock()
 	if CurrentProvider != nil {
 		return CurrentProvider
 	}
@@ -312,10 +414,7 @@ func providerNamesForAnime(config *CurdConfig, anime *Anime) []string {
 	return result
 }
 
-func qualifySelectionOption(providerName string, option SelectionOption, stacked bool) SelectionOption {
-	if !stacked {
-		return option
-	}
+func qualifySelectionOption(providerName string, option SelectionOption) SelectionOption {
 	option.Key = QualifyProviderID(providerName, option.Key)
 	if !strings.Contains(strings.ToLower(option.Label), "["+providerName+"]") {
 		option.Label = fmt.Sprintf("%s [%s]", option.Label, providerName)
@@ -325,60 +424,111 @@ func qualifySelectionOption(providerName string, option SelectionOption, stacked
 
 // Wrap functions so they can be easily called
 func SearchAnime(query, mode string) ([]SelectionOption, error) {
-	config := GetGlobalConfig()
+	results, _, err := searchAnimeStack(GetGlobalConfig(), query, mode)
+	return results, err
+}
+
+// ProviderSearchError records a per-provider search failure so recovery menus
+// can tell the user which providers failed instead of a bare "no results".
+type ProviderSearchError struct {
+	Provider string
+	Err      string
+}
+
+// searchAnimeStack runs the configured-provider search including the
+// Animepahe consent fallback. It returns the merged results plus the
+// per-provider failures behind them.
+func searchAnimeStack(config *CurdConfig, query, mode string) ([]SelectionOption, []ProviderSearchError, error) {
 	providerNames := configuredProviderNames(config)
-	results, err := searchAnimeWithProviders(providerNames, query, mode)
+	results, failures, err := searchAnimeWithProviders(providerNames, query, mode)
 	if err != nil || len(results) > 0 {
-		return results, err
+		return results, failures, err
 	}
 
 	if shouldOfferAnimepaheFallback(config, providerNames) {
 		useAnimepahe, declinedAnimepahe, promptErr := promptAnimepaheFallbackConsent()
 		if promptErr != nil {
-			return results, promptErr
+			return results, failures, promptErr
 		}
 		if useAnimepahe {
 			if updateErr := updateProviderConfig(config, appendProviderName(providerNames, "animepahe"), false); updateErr != nil {
-				return results, updateErr
+				return results, failures, updateErr
 			}
 			return searchAnimeWithProviders(configuredProviderNames(config), query, mode)
 		}
 		if declinedAnimepahe {
 			if updateErr := updateProviderConfig(config, providerNames, true); updateErr != nil {
-				return results, updateErr
+				return results, failures, updateErr
 			}
 		}
 	}
 
-	return results, nil
+	return results, failures, nil
 }
 
-func searchAnimeWithProviders(providerNames []string, query, mode string) ([]SelectionOption, error) {
-	if len(providerNames) == 1 {
-		provider, err := ProviderByName(providerNames[0])
-		if err != nil {
-			return nil, err
-		}
-		return provider.SearchAnime(query, mode)
+// searchProviderWithTimeout bounds a single provider search so one slow
+// provider cannot stall the whole stacked search. The provider call is left
+// running; only the wait is abandoned.
+func searchProviderWithTimeout(provider Provider, query, mode string) ([]SelectionOption, error) {
+	type outcome struct {
+		options []SelectionOption
+		err     error
 	}
+	done := make(chan outcome, 1)
+	go func() {
+		options, err := provider.SearchAnime(query, mode)
+		done <- outcome{options: options, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.options, result.err
+	case <-time.After(providerSearchTimeout):
+		return nil, fmt.Errorf("search timed out after %s", providerSearchTimeout)
+	}
+}
+
+func searchAnimeWithProviders(providerNames []string, query, mode string) ([]SelectionOption, []ProviderSearchError, error) {
+	// Fan out across providers concurrently; a slow provider no longer
+	// stalls the rest. Results are merged back in configured stack order so
+	// ranking and display stay deterministic.
+	type providerResult struct {
+		index   int
+		options []SelectionOption
+		failure *ProviderSearchError
+	}
+	collected := make([]providerResult, len(providerNames))
+	var wg sync.WaitGroup
+	for i, providerName := range providerNames {
+		wg.Add(1)
+		go func(index int, name string) {
+			defer wg.Done()
+			provider, err := ProviderByName(name)
+			if err != nil {
+				collected[index] = providerResult{index: index, failure: &ProviderSearchError{Provider: name, Err: err.Error()}}
+				return
+			}
+			options, err := searchProviderWithTimeout(provider, query, mode)
+			if err != nil {
+				Log(fmt.Sprintf("Provider %s search failed for %q: %v", name, query, err))
+				collected[index] = providerResult{index: index, failure: &ProviderSearchError{Provider: name, Err: err.Error()}}
+				return
+			}
+			collected[index] = providerResult{index: index, options: options}
+		}(i, providerName)
+	}
+	wg.Wait()
 
 	results := make([]SelectionOption, 0)
 	seen := make(map[string]struct{})
-	var searchErrors []string
-	for _, providerName := range providerNames {
-		provider, err := ProviderByName(providerName)
-		if err != nil {
-			searchErrors = append(searchErrors, err.Error())
+	failures := make([]ProviderSearchError, 0)
+	for _, item := range collected {
+		providerName := providerNames[item.index]
+		if item.failure != nil {
+			failures = append(failures, *item.failure)
 			continue
 		}
-		options, err := provider.SearchAnime(query, mode)
-		if err != nil {
-			Log(fmt.Sprintf("Provider %s search failed for %q: %v", providerName, query, err))
-			searchErrors = append(searchErrors, fmt.Sprintf("%s: %v", providerName, err))
-			continue
-		}
-		for _, option := range options {
-			option = qualifySelectionOption(providerName, option, true)
+		for _, option := range item.options {
+			option = qualifySelectionOption(providerName, option)
 			if _, exists := seen[option.Key]; exists {
 				continue
 			}
@@ -387,10 +537,14 @@ func searchAnimeWithProviders(providerNames []string, query, mode string) ([]Sel
 		}
 	}
 
-	if len(results) == 0 && len(searchErrors) > 0 {
-		return nil, fmt.Errorf("all provider searches failed: %s", strings.Join(searchErrors, "; "))
+	if len(results) == 0 && len(failures) > 0 {
+		details := make([]string, 0, len(failures))
+		for _, failure := range failures {
+			details = append(details, fmt.Sprintf("%s: %v", failure.Provider, failure.Err))
+		}
+		return nil, failures, fmt.Errorf("all provider searches failed: %s", strings.Join(details, "; "))
 	}
-	return results, nil
+	return results, failures, nil
 }
 
 func shouldOfferAnimepaheFallback(config *CurdConfig, providerNames []string) bool {
@@ -460,7 +614,7 @@ func appendProviderName(providerNames []string, providerName string) []string {
 func updateProviderConfig(config *CurdConfig, providerNames []string, animepaheDeclined bool) error {
 	providerValue := formatProviderConfigValue(providerNames, animepaheDeclined)
 	config.Provider = providerValue
-	CurrentProvider = nil
+	resetCurrentProvider()
 
 	if strings.TrimSpace(GlobalConfigPath) == "" {
 		return nil
@@ -573,14 +727,13 @@ func determineProviderTotalEpisodes(config *CurdConfig, query string, anime *Ani
 		if searchQuery == "" {
 			searchQuery = animeSearchTitle(anime)
 		}
-		option, ok := selectBestProviderSearchResult(options, anime, searchQuery)
+		// Identity only: totals must be read from a result proven to be the
+		// same show, never from a fuzzy best guess.
+		matched, ok := identityMatchProviderOption(options, anime, identityScope{query: searchQuery, episodes: anime.TotalEpisodes})
 		if !ok {
 			continue
 		}
-		providerID := option.Key
-		if _, parsedID, ok := ParseProviderQualifiedID(option.Key); ok {
-			providerID = parsedID
-		}
+		providerID := rawProviderKey(matched.Key)
 		if strings.TrimSpace(providerID) == "" {
 			continue
 		}
@@ -651,6 +804,7 @@ func GetEpisodeURLForPlayback(config CurdConfig, id string, epNo int) ([]string,
 	fallbackMode := alternateTranslationType(preferredMode)
 	fallbackConfig := config
 	fallbackConfig.SubOrDub = fallbackMode
+	probeTime := time.Now()
 	fallbackLinks, fallbackErr := GetEpisodeURL(fallbackConfig, id, epNo)
 	if fallbackErr != nil || len(fallbackLinks) == 0 {
 		if preferredErr != nil {
@@ -675,6 +829,19 @@ func GetEpisodeURLForPlayback(config CurdConfig, id string, epNo int) ([]string,
 			return nil, preferredMode, preferredErr
 		}
 		return nil, preferredMode, nil
+	}
+
+	// The fallback links above were resolved before the prompt: signed
+	// stream URLs expire within minutes, so re-resolve links older than
+	// the freshness bound and hand mpv links that are seconds old. If the
+	// fresh lookup fails, keep the probed links rather than failing an
+	// approved playback.
+	if !fallbackLinksFresh(probeTime) {
+		if freshLinks, freshErr := GetEpisodeURL(fallbackConfig, id, epNo); freshErr == nil && len(freshLinks) > 0 {
+			fallbackLinks = freshLinks
+		} else if freshErr != nil {
+			Log(fmt.Sprintf("fallback re-resolution failed, keeping probed links: %v", freshErr))
+		}
 	}
 
 	return fallbackLinks, fallbackMode, nil
@@ -726,42 +893,149 @@ func episodeModeResultWithProviders(config CurdConfig, anime *Anime, epNo int, m
 		providerNames = []string{firstEnabledProviderName()}
 	}
 
-	var errors []string
-	for _, providerName := range providerNames {
-		provider, err := ProviderByName(providerName)
-		if err != nil {
-			errors = append(errors, err.Error())
-			continue
-		}
-
-		providerID, err := findProviderIDForAnime(provider, anime, mode)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s lookup: %v", providerName, err))
-			continue
-		}
-
-		links, linkHints, err := getProviderEpisodeURLForModeWithHints(provider, config, providerID, epNo, mode)
-		if err != nil || len(links) == 0 {
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("%s episode: %v", providerName, err))
-			} else {
-				errors = append(errors, fmt.Sprintf("%s episode: no links", providerName))
+	// Resolve across the stack concurrently: every provider attempt is
+	// independent, and the sequential fallback walk made total latency the
+	// sum of per-provider attempts. Results are picked in stack order
+	// below, so the winner is identical to the sequential walk — only
+	// faster. Interactive prompts inside resolution serialize on promptMu.
+	outcomes := make([]providerOutcome, len(providerNames))
+	completed := make(chan int, len(providerNames))
+	// Snapshot once up front: goroutines map against immutable copies while
+	// the live anime is updated only for the winner below. Sharing the
+	// original pointer would race late goroutines against that update.
+	var snapshot Anime
+	hasAnime := anime != nil
+	if hasAnime {
+		snapshot = *anime
+	}
+	for i, providerName := range providerNames {
+		go func(index int, name string) {
+			// Each attempt maps against its own copy of the snapshot;
+			// the live anime mapping is updated only for the winner.
+			var attempt *Anime
+			if hasAnime {
+				cp := snapshot
+				attempt = &cp
 			}
-			continue
-		}
+			finish := func(outcome providerOutcome) {
+				outcomes[index] = outcome
+				completed <- index
+			}
+			provider, err := ProviderByName(name)
+			if err != nil {
+				finish(providerOutcome{failure: err.Error()})
+				return
+			}
 
-		anime.ProviderName = providerName
-		anime.ProviderId = providerID
-		return ProviderEpisodeResult{
-			Links:        links,
-			LinkHints:    linkHints,
-			ProviderName: providerName,
-			ProviderID:   providerID,
-			Mode:         mode,
-		}, nil
+			providerID, err := findProviderIDForAnime(provider, attempt, mode)
+			if err != nil {
+				finish(providerOutcome{failure: fmt.Sprintf("%s lookup: %v", name, err)})
+				return
+			}
+
+			links, linkHints, err := getProviderEpisodeURLForModeWithHints(provider, config, providerID, epNo, mode)
+			if err != nil || len(links) == 0 {
+				if err != nil {
+					finish(providerOutcome{failure: fmt.Sprintf("%s episode: %v", name, err)})
+					return
+				}
+				finish(providerOutcome{failure: fmt.Sprintf("%s episode: no links", name)})
+				return
+			}
+
+			finish(providerOutcome{
+				result: ProviderEpisodeResult{
+					Links:        links,
+					LinkHints:    linkHints,
+					ProviderName: name,
+					ProviderID:   providerID,
+					Mode:         mode,
+					ResolvedAt:   time.Now(),
+				},
+				succeeded: true,
+			})
+		}(i, providerName)
 	}
 
-	return ProviderEpisodeResult{}, fmt.Errorf("no %s episode links found across providers %s for %q episode %d: %s", mode, strings.Join(providerNames, ","), animeSearchTitle(anime), epNo, strings.Join(errors, "; "))
+	// Take the first success in stack order, waiting for earlier providers
+	// even when a later one finished first. Failures aggregate in stack
+	// order exactly as the sequential walk reported them. The overall
+	// deadline keeps one hung provider from stalling playback forever.
+	ready := make(map[int]bool, len(providerNames))
+	var failures []string
+	deadline := time.NewTimer(providerResolveTimeout)
+	defer deadline.Stop()
+	applyWinner := func(outcome providerOutcome) (ProviderEpisodeResult, bool) {
+		if !outcome.succeeded {
+			return ProviderEpisodeResult{}, false
+		}
+		if anime != nil {
+			anime.ProviderName = outcome.result.ProviderName
+			anime.ProviderId = outcome.result.ProviderID
+		}
+		return outcome.result, true
+	}
+	for next := 0; next < len(providerNames); next++ {
+		for !ready[next] {
+			select {
+			case idx := <-completed:
+				ready[idx] = true
+			case <-deadline.C:
+				return resolveOnTimeout(anime, mode, providerNames, epNo, outcomes, ready, next, failures)
+			}
+		}
+		outcome := outcomes[next]
+		if result, ok := applyWinner(outcome); ok {
+			return result, nil
+		}
+		failures = append(failures, outcome.failure)
+	}
+
+	return ProviderEpisodeResult{}, fmt.Errorf("no %s episode links found across providers %s for %q episode %d: %s", mode, strings.Join(providerNames, ","), animeSearchTitle(anime), epNo, strings.Join(failures, "; "))
+}
+
+// providerOutcome is one stacked-resolve attempt: either a playable result
+// or the failure that ruled that provider out.
+type providerOutcome struct {
+	result    ProviderEpisodeResult
+	failure   string
+	succeeded bool
+}
+
+// resolveOnTimeout settles a stacked resolve pass whose deadline fired
+// before every provider reported: the earliest stack-order success among
+// the completed attempts wins (with the live mapping updated), otherwise
+// the completed failures are reported along with a timeout note naming
+// the providers that never reported.
+func resolveOnTimeout(anime *Anime, mode string, providerNames []string, epNo int, outcomes []providerOutcome, ready map[int]bool, drained int, failures []string) (ProviderEpisodeResult, error) {
+	var pending []string
+	for i, name := range providerNames {
+		if !ready[i] {
+			pending = append(pending, name)
+			continue
+		}
+		if outcomes[i].succeeded {
+			if anime != nil {
+				anime.ProviderName = outcomes[i].result.ProviderName
+				anime.ProviderId = outcomes[i].result.ProviderID
+			}
+			return outcomes[i].result, nil
+		}
+		// A completed failure past the drain point was never appended:
+		// include it so the error reflects every provider that reported.
+		// Slots before drained are already in failures; skip them to
+		// avoid double-counting.
+		if i >= drained {
+			failures = append(failures, outcomes[i].failure)
+		}
+	}
+	details := strings.Join(failures, "; ")
+	if timeoutNote := "timed out waiting for " + strings.Join(pending, ", "); details != "" {
+		details += "; " + timeoutNote
+	} else {
+		details = timeoutNote
+	}
+	return ProviderEpisodeResult{}, fmt.Errorf("no %s episode links found across providers %s for %q episode %d: %s", mode, strings.Join(providerNames, ","), animeSearchTitle(anime), epNo, details)
 }
 
 func filterExcludedProviders(providerNames []string, exclude []string) []string {
@@ -836,6 +1110,19 @@ func ResolveEpisodeURLAlternateModeWithPrompt(config CurdConfig, anime *Anime, e
 	}
 	if selected.Key != "play" {
 		return ProviderEpisodeResult{}, fmt.Errorf("%s unavailable and %s fallback declined", preferredMode, fallbackMode)
+	}
+
+	// The probe links above were resolved before the prompt: signed stream
+	// URLs expire within minutes, so re-resolve links older than the
+	// freshness bound and hand mpv links that are seconds old. If the
+	// fresh lookup fails, keep the probed links rather than failing an
+	// approved playback.
+	if !fallbackLinksFresh(fallbackResult.ResolvedAt) {
+		if fresh, freshErr := episodeModeResultWithProviders(config, probeAnime, epNo, fallbackMode, providerNames); freshErr == nil && len(fresh.Links) > 0 {
+			fallbackResult = fresh
+		} else if freshErr != nil {
+			Log(fmt.Sprintf("fallback re-resolution failed, keeping probed links: %v", freshErr))
+		}
 	}
 
 	if anime != nil {
@@ -945,12 +1232,12 @@ func animeSearchTitle(anime *Anime) string {
 
 func normalizeSearchTitle(title string) string {
 	title = strings.ToLower(strings.TrimSpace(title))
-	replacer := strings.NewReplacer(":", "", "-", " ", "_", " ", ".", " ", "'", "", "\"", "", "!", "", "?", "", "(", " ", ")", " ")
+	replacer := strings.NewReplacer(":", "", "-", " ", "_", " ", ".", " ", "'", "", "\"", "", "!", "", "?", "", "(", " ", ")", " ", "/", " ", ";", " ")
 	title = replacer.Replace(title)
 	return strings.Join(strings.Fields(title), " ")
 }
 
-func scoreProviderSearchOption(option SelectionOption, anime *Anime, query string, index, total int) int {
+func scoreProviderSearchOption(option SelectionOption, anime *Anime, query string) int {
 	optionTitle := normalizeSearchTitle(option.Title)
 	if optionTitle == "" {
 		optionTitle = normalizeSearchTitle(option.Label)
@@ -963,7 +1250,10 @@ func scoreProviderSearchOption(option SelectionOption, anime *Anime, query strin
 		normalizeSearchTitle(anime.Title.Japanese),
 	}
 
-	score := total - index
+	// Ranking only: this score orders the picker list and never decides a
+	// match. Position-in-list and substring heuristics were removed because
+	// they are not identity.
+	score := 0
 	for _, targetTitle := range targetTitles {
 		if targetTitle == "" {
 			continue
@@ -974,7 +1264,7 @@ func scoreProviderSearchOption(option SelectionOption, anime *Anime, query strin
 			score += 35
 		}
 	}
-	if anime.AnilistId != 0 && strings.Contains(option.Thumbnail, fmt.Sprintf("%d", anime.AnilistId)) {
+	if anime.AnilistId != 0 && thumbnailExactTokenMatch(option.Thumbnail, anime.AnilistId) {
 		score += 120
 	}
 	if anime.TotalEpisodes > 0 && strings.Contains(option.Label, fmt.Sprintf("(%d episodes)", anime.TotalEpisodes)) {
@@ -987,49 +1277,358 @@ func scoreProviderSearchOption(option SelectionOption, anime *Anime, query strin
 }
 
 func selectBestProviderSearchResult(options []SelectionOption, anime *Anime, query string) (SelectionOption, bool) {
-	if len(options) == 0 {
+	ranked := rankProviderSearchOptions(options, anime, query, nil)
+	if len(ranked) == 0 {
 		return SelectionOption{}, false
 	}
-
-	bestIndex := 0
-	bestScore := -1
-	for i, option := range options {
-		score := scoreProviderSearchOption(option, anime, query, i, len(options))
-		if score > bestScore {
-			bestScore = score
-			bestIndex = i
-		}
-	}
-
-	return options[bestIndex], true
+	return ranked[0], true
 }
 
-// confidentProviderSearchMatch auto-selects when title/thumbnail scoring clearly
-// identifies one provider result, e.g. AniList romaji query against AllAnime englishName.
-func confidentProviderSearchMatch(options []SelectionOption, anime *Anime, query string) (SelectionOption, bool) {
-	if len(options) == 0 {
-		return SelectionOption{}, false
+// rankProviderSearchOptions orders results by title/thumbnail signal for
+// display. Ranking never decides a match — identity checks do that.
+func rankProviderSearchOptions(options []SelectionOption, anime *Anime, query string, providerOrder []string) []SelectionOption {
+	ranked := append([]SelectionOption(nil), options...)
+	order := make(map[string]int, len(providerOrder))
+	for i, name := range providerOrder {
+		order[name] = i
 	}
+	providerRank := func(option SelectionOption) int {
+		if name, _, ok := ParseProviderQualifiedID(option.Key); ok {
+			if rank, exists := order[name]; exists {
+				return rank
+			}
+		}
+		return len(providerOrder)
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		scoreI := scoreProviderSearchOption(ranked[i], anime, query)
+		scoreJ := scoreProviderSearchOption(ranked[j], anime, query)
+		if scoreI != scoreJ {
+			return scoreI > scoreJ
+		}
+		return providerRank(ranked[i]) < providerRank(ranked[j])
+	})
+	return ranked
+}
 
-	bestIndex := 0
-	bestScore := -1
-	secondBestScore := -1
-	for i, option := range options {
-		score := scoreProviderSearchOption(option, anime, query, i, len(options))
-		if score > bestScore {
-			secondBestScore = bestScore
-			bestScore = score
-			bestIndex = i
-		} else if score > secondBestScore {
-			secondBestScore = score
+// thumbnailExactTokenMatch reports whether an AniList ID appears as a whole
+// numeric token in a thumbnail URL. A bare substring contains would match ID
+// 1 against nearly every URL, so tokens are compared for equality.
+func thumbnailExactTokenMatch(thumbnail string, anilistID int) bool {
+	want := strconv.Itoa(anilistID)
+	var token strings.Builder
+	flush := func() bool {
+		if token.Len() > 0 {
+			matched := token.String() == want
+			token.Reset()
+			return matched
+		}
+		return false
+	}
+	for _, r := range thumbnail {
+		if r >= '0' && r <= '9' {
+			token.WriteRune(r)
+			continue
+		}
+		if flush() {
+			return true
+		}
+	}
+	return flush()
+}
+
+// providerFacts carries identity signals extracted from a provider result's
+// ExtraData. Every field comes from the search response itself — gathering
+// facts never costs an extra network request.
+type providerFacts struct {
+	malID int
+	// episodes is the catalog episode count when the provider reports one.
+	episodes int
+	// typ is the release type (TV, Movie, ...) when the provider reports one.
+	typ string
+	// altTitles are alternate original-language titles (anikoto data-jp,
+	// anilight/animex romaji and native titles). They need no extra fetch.
+	altTitles []string
+}
+
+func providerFactsFromExtra(extra any) providerFacts {
+	switch item := extra.(type) {
+	case anipub.SearchItem:
+		return providerFacts{malID: item.MalID, episodes: item.Episodes}
+	case senshi.SearchItem:
+		return providerFacts{malID: item.MalID, episodes: item.Episodes, typ: item.Type}
+	case animepahe.SearchItem:
+		return providerFacts{episodes: item.Episodes, typ: item.Type}
+	case anipm.SearchItem:
+		return providerFacts{malID: item.MalID, episodes: item.Episodes, typ: item.Type}
+	case anikoto.SearchItem:
+		return providerFacts{altTitles: nonEmpty(item.JapaneseTitle)}
+	case anilight.SearchItem:
+		return providerFacts{malID: item.MalID, episodes: item.Episodes, typ: item.Type, altTitles: nonEmpty(item.Romaji, item.Native)}
+	case animex.SearchItem:
+		return providerFacts{malID: item.MalID, episodes: item.Episodes, typ: item.Type, altTitles: nonEmpty(item.Romaji)}
+	case aniwaves.SearchItem:
+		return providerFacts{typ: item.Type, altTitles: nonEmpty(item.JapaneseTitle)}
+	case allanime.SearchItem:
+		return providerFacts{episodes: item.Episodes}
+	case anineko.SearchItem:
+		return providerFacts{typ: item.Type}
+	default:
+		return providerFacts{}
+	}
+}
+
+// normalizeReleaseType maps release-type spellings ("TV", "TV_SHORT",
+// "TV Short", "Movie") to one comparable form for exact matching.
+func normalizeReleaseType(raw string) string {
+	upper := strings.ToUpper(strings.TrimSpace(raw))
+	upper = strings.ReplaceAll(upper, "_", " ")
+	upper = strings.ReplaceAll(upper, "-", " ")
+	return strings.Join(strings.Fields(upper), " ")
+}
+
+// identityTargetTitles returns the normalized titles that identify the anime:
+// the search query plus every known tracker title.
+func identityTargetTitles(anime *Anime, query string) []string {
+	targets := make([]string, 0, 4)
+	for _, title := range []string{
+		query,
+		anime.Title.English,
+		anime.Title.Romaji,
+		anime.Title.Japanese,
+	} {
+		if normalized := normalizeSearchTitle(title); normalized != "" {
+			targets = append(targets, normalized)
+		}
+	}
+	return targets
+}
+
+func rawProviderKey(qualifiedKey string) string {
+	if _, rawID, ok := ParseProviderQualifiedID(qualifiedKey); ok {
+		return rawID
+	}
+	return qualifiedKey
+}
+
+// identityMatchProviderOption returns the provider-scoped ID of the option
+// that shares cross-system identity with anime, using only data already in
+// hand: an exact MAL ID (key or ExtraData), an exact AniList/senshi image
+// ID, an exact title plus matching episode count, an exact title plus
+// matching release type, or one unique exact title match. Anything else
+// returns ok=false so playback never guesses a show.
+// identityScope carries the tracker-known context used to disambiguate
+// same-title provider results. Episodes and format gate the multi-axis
+// rules; fetchEpisodes (nil = no fetching) enriches candidates that carry
+// no episode count by reading their existing episode lists, bounded so one
+// ambiguous match costs at most a few list fetches.
+type identityScope struct {
+	query    string
+	episodes int
+	format   string
+	mode     string
+	// provider names the single provider options came from when they
+	// carry unqualified keys (direct per-provider searches).
+	provider      string
+	fetchEpisodes func(providerName, rawID, mode string) ([]string, error)
+}
+
+func identityMatchProviderOption(options []SelectionOption, anime *Anime, scope identityScope) (SelectionOption, bool) {
+	query := scope.query
+	trackerEpisodes := scope.episodes
+	trackerFormat := scope.format
+	for _, option := range options {
+		key := rawProviderKey(option.Key)
+		if anime.MalId != 0 {
+			if key == strconv.Itoa(anime.MalId) {
+				return option, true
+			}
+			if malID := malIDFromProviderExtraData(option.ExtraData); malID != 0 && malID == anime.MalId {
+				return option, true
+			}
+		}
+		if anime.AnilistId != 0 && thumbnailExactAnilistMatch(option.Thumbnail, anime.AnilistId) {
+			return option, true
+		}
+		if anime.MalId != 0 && senshiPosterMatchesMalID(option.Thumbnail, anime.MalId) {
+			return option, true
 		}
 	}
 
-	if bestScore >= 120 {
-		return options[bestIndex], true
+	type titleHit struct {
+		option   SelectionOption
+		episodes int
+		typ      string
+		malID    int
+		full     bool
 	}
-	if bestScore >= 100 && (len(options) == 1 || bestScore-secondBestScore >= 30) {
-		return options[bestIndex], true
+	targets := identityTargetTitles(anime, query)
+	var hits []titleHit
+	anyFull := false
+	for _, option := range options {
+		facts := providerFactsFromExtra(option.ExtraData)
+		base := normalizeSearchTitle(option.Title)
+		if base == "" {
+			base = normalizeSearchTitle(option.Label)
+		}
+		type candidate struct {
+			title    string
+			verbatim bool
+		}
+		candidates := []candidate{{title: base, verbatim: true}}
+		if stripped := stripTrailingYear(base); stripped != "" && stripped != base {
+			candidates = append(candidates, candidate{title: stripped})
+		}
+		for _, alt := range facts.altTitles {
+			if normalized := normalizeSearchTitle(alt); normalized != "" {
+				candidates = append(candidates, candidate{title: normalized, verbatim: true})
+				if stripped := stripTrailingYear(normalized); stripped != "" && stripped != normalized {
+					candidates = append(candidates, candidate{title: stripped})
+				}
+			}
+		}
+		matched, full := false, false
+		for _, optionTitle := range candidates {
+			if optionTitle.title == "" {
+				continue
+			}
+			for _, target := range targets {
+				if optionTitle.title == target {
+					matched = true
+					full = full || optionTitle.verbatim
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if matched {
+			hits = append(hits, titleHit{option: option, episodes: facts.episodes, typ: facts.typ, malID: facts.malID, full: full})
+			anyFull = anyFull || full
+		}
+	}
+	// A full exact title beats year-stripped variants: only fall back to
+	// stripped candidates when nothing matches verbatim.
+	if anyFull {
+		full := hits[:0]
+		for _, hit := range hits {
+			if hit.full {
+				full = append(full, hit)
+			}
+		}
+		hits = full
+	}
+	if len(hits) == 0 {
+		return SelectionOption{}, false
+	}
+	// Same exact title on several entries (seasons, remakes, movies):
+	// disambiguate by exact episode count, then by exact release type.
+	// Either signal must be known on both sides to count, and a *known*
+	// contradiction vetoes: a candidate whose provider-reported data
+	// disagrees with the tracker can never auto-match, even alone.
+	// Candidates that carry no count are enriched via their existing
+	// episode lists (bounded).
+	if trackerEpisodes > 0 || normalizeReleaseType(trackerFormat) != "" || anime.MalId != 0 {
+		kept := make([]titleHit, 0, len(hits))
+		fetches := 0
+		for _, hit := range hits {
+			episodes, typ := hit.episodes, hit.typ
+			if episodes == 0 && trackerEpisodes > 0 && scope.fetchEpisodes != nil && fetches < 3 {
+				name, _, _ := ParseProviderQualifiedID(hit.option.Key)
+				if name == "" {
+					// Unqualified keys from a direct per-provider search.
+					name = scope.provider
+				}
+				if name != "" {
+					if list, err := scope.fetchEpisodes(name, rawProviderKey(hit.option.Key), scope.mode); err == nil {
+						episodes = inferTotalEpisodesFromEpisodeList(list)
+					}
+					fetches++
+				}
+			}
+			if trackerEpisodes > 0 && episodes != 0 && episodes != trackerEpisodes {
+				continue
+			}
+			if normalized := normalizeReleaseType(trackerFormat); normalized != "" && typ != "" && normalizeReleaseType(typ) != normalized {
+				continue
+			}
+			if anime.MalId != 0 && hit.malID != 0 && hit.malID != anime.MalId {
+				continue
+			}
+			hit.episodes = episodes
+			kept = append(kept, hit)
+		}
+		hits = kept
+	}
+	if len(hits) == 0 {
+		return SelectionOption{}, false
+	}
+	// Without a tracker MAL ID to anchor on, differing known MAL IDs prove
+	// different shows no matter how identical the titles look.
+	if anime.MalId == 0 {
+		seenMAL := map[int]struct{}{}
+		for _, hit := range hits {
+			if hit.malID == 0 {
+				continue
+			}
+			seenMAL[hit.malID] = struct{}{}
+			if len(seenMAL) > 1 {
+				return SelectionOption{}, false
+			}
+		}
+	}
+	if trackerEpisodes > 0 {
+		var episodeHits []titleHit
+		for _, hit := range hits {
+			if hit.episodes == trackerEpisodes {
+				episodeHits = append(episodeHits, hit)
+			}
+		}
+		if len(episodeHits) == 1 {
+			return episodeHits[0].option, true
+		}
+		// Consensus: every remaining candidate shares the exact title AND
+		// the exact episode count, with no contradicting MAL ID or release
+		// type among them. That combination identifies one show; the
+		// candidates are the same catalog entry mirrored across providers,
+		// so the first (highest-priority provider) is safe to take.
+		// Single-episode entries are excluded: a bare title match on a
+		// movie or special stays with the picker.
+		if trackerEpisodes > 1 && len(episodeHits) > 1 {
+			unanimous := true
+			seenMAL := map[int]struct{}{}
+			seenType := map[string]struct{}{}
+			for _, hit := range episodeHits {
+				if hit.malID != 0 {
+					seenMAL[hit.malID] = struct{}{}
+				}
+				if hit.typ != "" {
+					seenType[normalizeReleaseType(hit.typ)] = struct{}{}
+				}
+				if len(seenMAL) > 1 || len(seenType) > 1 {
+					unanimous = false
+					break
+				}
+			}
+			if unanimous {
+				return episodeHits[0].option, true
+			}
+		}
+	}
+	if normalized := normalizeReleaseType(trackerFormat); normalized != "" {
+		var typeHits []titleHit
+		for _, hit := range hits {
+			if hit.typ != "" && normalizeReleaseType(hit.typ) == normalized {
+				typeHits = append(typeHits, hit)
+			}
+		}
+		if len(typeHits) == 1 {
+			return typeHits[0].option, true
+		}
+	}
+	if len(hits) == 1 {
+		return hits[0].option, true
 	}
 	return SelectionOption{}, false
 }
@@ -1049,13 +1648,28 @@ func findProviderIDForAnime(provider Provider, anime *Anime, mode string) (strin
 	if err != nil {
 		return "", err
 	}
-	option, ok := selectBestProviderSearchResult(options, anime, query)
-	if !ok {
+	if len(options) == 0 {
 		return "", fmt.Errorf("no %s search results for %q", provider.Name(), query)
 	}
-
-	Log(fmt.Sprintf("Mapped %q to provider %s id %s for %s fallback", query, provider.Name(), option.Key, mode))
-	return option.Key, nil
+	// Identity only: playback must never adopt a fuzzy title guess as the
+	// show. A miss here routes to the diagnosed recovery menu instead.
+	// Ambiguous same-title candidates are disambiguated with their existing
+	// episode lists (bounded, no new endpoints).
+	playbackScope := identityScope{
+		query:    query,
+		episodes: anime.TotalEpisodes,
+		mode:     normalizeTranslationType(mode),
+		provider: provider.Name(),
+		fetchEpisodes: func(providerName, rawID, lookupMode string) ([]string, error) {
+			return EpisodesList(QualifyProviderID(providerName, rawID), lookupMode)
+		},
+	}
+	if matched, ok := identityMatchProviderOption(options, anime, playbackScope); ok {
+		id := rawProviderKey(matched.Key)
+		Log(fmt.Sprintf("Mapped %q to provider %s id %s for %s fallback", query, provider.Name(), id, mode))
+		return id, nil
+	}
+	return "", fmt.Errorf("no identity-matched %s result for %q", provider.Name(), query)
 }
 
 func audioFallbackPrompt(preferredMode, fallbackMode string) string {
